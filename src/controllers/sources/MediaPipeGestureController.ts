@@ -3,7 +3,8 @@ import type { Dispatch, GestureController as IGestureController } from '@/types/
 import { classifyPose } from '../gestures/classifyPose';
 import { GestureInterpreter } from '../gestures/GestureInterpreter';
 import { HandLockTracker } from '../gestures/HandLockTracker';
-import type { GestureMode, LockState } from '../gestures/gestureTypes';
+import { selectPrimaryGesture } from '../gestures/selectPrimaryGesture';
+import type { GestureMode, Landmark, LockState } from '../gestures/gestureTypes';
 
 const WASM_BASE_URL =
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm';
@@ -34,6 +35,7 @@ export class MediaPipeGestureController implements IGestureController {
   private rafId: number | null = null;
   private interpreter: GestureInterpreter;
   private lockTracker: HandLockTracker;
+  private lastPrimaryPosition: Landmark | null = null;
   private onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
 
   constructor(options: MediaPipeGestureControllerOptions = {}) {
@@ -83,7 +85,7 @@ export class MediaPipeGestureController implements IGestureController {
         this.landmarker = await HandLandmarker.createFromOptions(vision, {
           baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
           runningMode: 'VIDEO',
-          numHands: 1,
+          numHands: 2,
         });
       }
 
@@ -107,6 +109,7 @@ export class MediaPipeGestureController implements IGestureController {
     this.stream = null;
     this.video = null;
     this._isTracking = false;
+    this.lastPrimaryPosition = null;
     this.lockTracker.reset();
     this.interpreter.reset();
     this.onStatusChange?.('idle');
@@ -118,7 +121,10 @@ export class MediaPipeGestureController implements IGestureController {
     const timestampMs = performance.now();
     const result = this.landmarker.detectForVideo(this.video, timestampMs);
 
-    const raw = result.landmarks.length > 0 ? classifyPose(result.landmarks[0]) : null;
+    const gestures = result.landmarks.map((landmarks) => classifyPose(landmarks));
+    const raw = selectPrimaryGesture(gestures, this.lastPrimaryPosition);
+    this.lastPrimaryPosition = raw?.position ?? null;
+
     const locked = this.lockTracker.process(raw, timestampMs);
 
     if (locked) {
