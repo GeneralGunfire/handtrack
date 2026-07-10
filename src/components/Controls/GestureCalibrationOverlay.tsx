@@ -53,11 +53,11 @@ export function GestureCalibrationOverlay() {
 
             <div className="text-center">
               <p className="text-sm font-medium text-ink-0">
-                {lockState === 'lost' ? 'Hand lost' : 'Show your palm to calibrate'}
+                {lockState === 'lost' ? 'Hand lost' : 'Show a hand to calibrate'}
               </p>
               <p className="mt-1 text-xs text-ink-1">
                 {lockState === 'lost'
-                  ? 'Raise your palm to reconnect'
+                  ? 'Raise your hand to reconnect'
                   : 'Hold it steady, facing the camera'}
               </p>
             </div>

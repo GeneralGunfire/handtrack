@@ -12,6 +12,7 @@ import { ImageCounter } from '@/components/Controls/ImageCounter';
 import { MetadataOverlay } from '@/components/Controls/MetadataOverlay';
 import { GestureCalibrationOverlay } from '@/components/Controls/GestureCalibrationOverlay';
 import { GestureModeIndicator } from '@/components/Controls/GestureModeIndicator';
+import { HandSkeletonOverlay } from '@/components/Controls/HandSkeletonOverlay';
 
 function ViewerContent() {
   const uiVisible = useViewerStore((state) => state.uiVisible);
@@ -66,6 +67,7 @@ function ViewerContent() {
 
         <GestureCalibrationOverlay />
         <GestureModeIndicator />
+        <HandSkeletonOverlay />
       </div>
     </Dropzone>
   );

@@ -2,31 +2,37 @@ import type { Landmark, RecognizedGesture } from './gestureTypes';
 
 const STICKINESS_RADIUS = 0.25;
 
-/**
- * Picks which of up to 2 detected hands should drive the interpreter this
- * frame. Either hand can perform either gesture, so the choice is: prefer
- * whichever hand is closer to whichever hand was driving things last frame
- * (avoids flickering between hands when both are in view), otherwise
- * prefer a hand with a recognized pose (fist/open_palm) over 'unknown'.
- */
-export function selectPrimaryGesture(
-  gestures: RecognizedGesture[],
-  lastPosition: Landmark | null,
-): RecognizedGesture | null {
-  if (gestures.length === 0) return null;
-  if (gestures.length === 1) return gestures[0];
+export interface HandSelection {
+  primary: RecognizedGesture | null;
+  /** The other hand, if a second one is visible — used for the stop gesture. */
+  secondary: RecognizedGesture | null;
+}
 
-  if (lastPosition) {
-    const closest = [...gestures].sort(
-      (a, b) => distance(a.position, lastPosition) - distance(b.position, lastPosition),
-    )[0];
-    if (distance(closest.position, lastPosition) < STICKINESS_RADIUS) {
-      return closest;
+/**
+ * Picks which of up to 2 detected hands drives swipe/pan/zoom this frame,
+ * and which (if any) is the "other" hand available for the stop gesture.
+ * The primary hand is whichever is closest to wherever it was last frame
+ * (avoids flickering between hands when both are in view); with no prior
+ * position, the first detected hand is primary.
+ */
+export function selectHands(
+  gestures: RecognizedGesture[],
+  lastPrimaryPosition: Landmark | null,
+): HandSelection {
+  if (gestures.length === 0) return { primary: null, secondary: null };
+  if (gestures.length === 1) return { primary: gestures[0], secondary: null };
+
+  if (lastPrimaryPosition) {
+    const sorted = [...gestures].sort(
+      (a, b) =>
+        distance(a.position, lastPrimaryPosition) - distance(b.position, lastPrimaryPosition),
+    );
+    if (distance(sorted[0].position, lastPrimaryPosition) < STICKINESS_RADIUS) {
+      return { primary: sorted[0], secondary: sorted[1] };
     }
   }
 
-  const recognized = gestures.find((g) => g.pose !== 'unknown');
-  return recognized ?? gestures[0];
+  return { primary: gestures[0], secondary: gestures[1] };
 }
 
 function distance(a: Landmark, b: Landmark): number {

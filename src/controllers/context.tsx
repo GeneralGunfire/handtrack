@@ -3,9 +3,15 @@ import type { ReactNode } from 'react';
 import { InputManager } from './InputManager';
 import { MouseKeyboardSource } from './sources/MouseKeyboardSource';
 import { MediaPipeGestureController } from './sources/MediaPipeGestureController';
+import type { HandFrameUpdate } from './sources/MediaPipeGestureController';
 import { useViewerStore } from '@/store/viewerStore';
 import { computeActualScale, MAX_SCALE, MIN_SCALE } from '@/utils/geometry';
 import { clamp } from '@/utils/clamp';
+
+/** Latest webcam frame + hand landmarks, updated outside React state so the
+ *  debug skeleton overlay can read it in its own rAF loop without causing
+ *  a re-render on every camera frame. */
+export const latestHandFrameRef: { current: HandFrameUpdate | null } = { current: null };
 
 interface InputManagerContextValue {
   manager: InputManager;
@@ -65,6 +71,9 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
       },
       onModeChange: (mode) => {
         useViewerStore.getState().setGestureMode(mode);
+      },
+      onHandFrame: (update) => {
+        latestHandFrameRef.current = update;
       },
     }),
   );

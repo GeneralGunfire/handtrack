@@ -3,13 +3,21 @@ import type { Dispatch, GestureController as IGestureController } from '@/types/
 import { classifyPose } from '../gestures/classifyPose';
 import { GestureInterpreter } from '../gestures/GestureInterpreter';
 import { HandLockTracker } from '../gestures/HandLockTracker';
-import { selectPrimaryGesture } from '../gestures/selectPrimaryGesture';
+import { selectHands } from '../gestures/selectPrimaryGesture';
 import type { GestureMode, Landmark, LockState } from '../gestures/gestureTypes';
+
+export interface HandFrameUpdate {
+  video: HTMLVideoElement;
+  hands: Landmark[][];
+}
 
 const WASM_BASE_URL =
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm';
 const MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+
+/** The second hand must hold an open palm this long to trigger a full stop. */
+const STOP_HOLD_MS = 400;
 
 export type GestureControllerStatus = 'idle' | 'loading' | 'active' | 'error';
 
@@ -17,15 +25,19 @@ interface MediaPipeGestureControllerOptions {
   onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
   onLockStateChange?: (state: LockState, progress: number) => void;
   onModeChange?: (mode: GestureMode) => void;
+  /** Fired every processed frame with the raw video + landmarks, for a debug skeleton overlay. */
+  onHandFrame?: (update: HandFrameUpdate) => void;
 }
 
 /**
  * Real hand-tracking implementation of GestureController. Reads webcam
- * frames, runs MediaPipe's HandLandmarker, classifies the pose, gates it
- * through HandLockTracker (calibration + smoothing + lost detection), and
- * feeds locked frames through GestureInterpreter to produce Actions — the
- * same Action union MouseKeyboardSource produces. InputManager and the
- * Viewer are unaware this exists versus the NoOp stub.
+ * frames, runs MediaPipe's HandLandmarker, selects a primary hand to drive
+ * swipe/pan/zoom (motion-based, gated through HandLockTracker for
+ * calibration + smoothing + lost detection) and a secondary hand watched
+ * for the "stop" gesture (holding an open palm forces a full reset back
+ * to calibration). Feeds locked frames through GestureInterpreter to
+ * produce Actions — the same Action union MouseKeyboardSource produces.
+ * InputManager and the Viewer are unaware this exists versus the NoOp stub.
  */
 export class MediaPipeGestureController implements IGestureController {
   private _isTracking = false;
@@ -36,10 +48,13 @@ export class MediaPipeGestureController implements IGestureController {
   private interpreter: GestureInterpreter;
   private lockTracker: HandLockTracker;
   private lastPrimaryPosition: Landmark | null = null;
+  private stopGestureSinceMs: number | null = null;
   private onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
+  private onHandFrame?: (update: HandFrameUpdate) => void;
 
   constructor(options: MediaPipeGestureControllerOptions = {}) {
     this.onStatusChange = options.onStatusChange;
+    this.onHandFrame = options.onHandFrame;
     this.interpreter = new GestureInterpreter({
       onModeChange: (change) => options.onModeChange?.(change.mode),
     });
@@ -110,6 +125,7 @@ export class MediaPipeGestureController implements IGestureController {
     this.video = null;
     this._isTracking = false;
     this.lastPrimaryPosition = null;
+    this.stopGestureSinceMs = null;
     this.lockTracker.reset();
     this.interpreter.reset();
     this.onStatusChange?.('idle');
@@ -121,11 +137,18 @@ export class MediaPipeGestureController implements IGestureController {
     const timestampMs = performance.now();
     const result = this.landmarker.detectForVideo(this.video, timestampMs);
 
-    const gestures = result.landmarks.map((landmarks) => classifyPose(landmarks));
-    const raw = selectPrimaryGesture(gestures, this.lastPrimaryPosition);
-    this.lastPrimaryPosition = raw?.position ?? null;
+    this.onHandFrame?.({ video: this.video, hands: result.landmarks as Landmark[][] });
 
-    const locked = this.lockTracker.process(raw, timestampMs);
+    const gestures = result.landmarks.map((landmarks) => classifyPose(landmarks));
+    const { primary, secondary } = selectHands(gestures, this.lastPrimaryPosition);
+    this.lastPrimaryPosition = primary?.position ?? null;
+
+    if (this.checkSecondHandStop(secondary, timestampMs)) {
+      this.rafId = requestAnimationFrame(this.loop);
+      return;
+    }
+
+    const locked = this.lockTracker.process(primary, timestampMs);
 
     if (locked) {
       this.interpreter.process(locked, timestampMs);
@@ -133,4 +156,29 @@ export class MediaPipeGestureController implements IGestureController {
 
     this.rafId = requestAnimationFrame(this.loop);
   };
+
+  /** Returns true if the stop gesture just fired (caller should skip normal processing this frame). */
+  private checkSecondHandStop(
+    secondary: ReturnType<typeof selectHands>['secondary'],
+    timestampMs: number,
+  ): boolean {
+    if (secondary?.pose !== 'open_palm') {
+      this.stopGestureSinceMs = null;
+      return false;
+    }
+
+    if (this.stopGestureSinceMs === null) {
+      this.stopGestureSinceMs = timestampMs;
+      return false;
+    }
+
+    if (timestampMs - this.stopGestureSinceMs >= STOP_HOLD_MS) {
+      this.stopGestureSinceMs = null;
+      this.lockTracker.reset();
+      this.interpreter.reset();
+      return true;
+    }
+
+    return false;
+  }
 }
