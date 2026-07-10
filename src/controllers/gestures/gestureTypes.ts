@@ -4,18 +4,17 @@ export interface Landmark {
   z: number;
 }
 
-/** One hand's 21 MediaPipe landmarks plus a timestamp for velocity tracking. */
-export interface HandFrame {
-  landmarks: Landmark[];
-  timestampMs: number;
-}
-
-export type HandPose = 'open_palm' | 'fist' | 'pinch' | 'thumbs_up' | 'unknown';
+export type HandPose = 'open_palm' | 'fist' | 'thumbs_up' | 'unknown';
 
 export interface RecognizedGesture {
   pose: HandPose;
-  /** Normalized 0-1 position of the hand centroid, for pan/cursor mapping. */
+  /** Normalized 0-1 position of the hand centroid. */
   position: Landmark;
-  /** Pinch distance (thumb tip to index tip), present only for 'pinch'. */
-  pinchDistance?: number;
+  /** Raw thumb-tip to index-tip distance, in the same normalized units as landmarks. */
+  pinchDistance: number;
+  /** Wrist-to-middle-MCP distance — a stable proxy for "hand size on screen", used to
+   *  normalize pinch distance so zoom sensitivity doesn't depend on distance from camera. */
+  handSpan: number;
 }
+
+export type LockState = 'searching' | 'locking' | 'locked' | 'lost';

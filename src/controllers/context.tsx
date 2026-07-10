@@ -60,6 +60,10 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
       onStatusChange: (status, error) => {
         useViewerStore.getState().setGestureStatus(status, error);
       },
+      onLockStateChange: (state, progress) => {
+        useViewerStore.getState().setGestureLock(state, progress);
+      },
+      getZoomScale: () => useViewerStore.getState().zoomPan.scale,
     }),
   );
 

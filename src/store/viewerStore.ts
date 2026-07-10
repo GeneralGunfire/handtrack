@@ -30,6 +30,8 @@ interface ViewerState {
 
   gestureStatus: 'idle' | 'loading' | 'active' | 'error';
   gestureError: string | null;
+  gestureLockState: 'searching' | 'locking' | 'locked' | 'lost';
+  gestureLockProgress: number;
 
   addImages: (images: ImageItem[]) => void;
   removeImage: (id: string) => void;
@@ -54,6 +56,7 @@ interface ViewerState {
   setCursorPosition: (position: Point) => void;
 
   setGestureStatus: (status: 'idle' | 'loading' | 'active' | 'error', error?: string) => void;
+  setGestureLock: (state: 'searching' | 'locking' | 'locked' | 'lost', progress: number) => void;
 }
 
 const DEFAULT_ZOOM_PAN: ZoomPanState = { scale: 1, x: 0, y: 0 };
@@ -77,6 +80,8 @@ export const useViewerStore = create<ViewerState>((set) => ({
 
   gestureStatus: 'idle',
   gestureError: null,
+  gestureLockState: 'searching',
+  gestureLockProgress: 0,
 
   addImages: (images) =>
     set((state) => ({
@@ -178,6 +183,9 @@ export const useViewerStore = create<ViewerState>((set) => ({
 
   setGestureStatus: (status, error) =>
     set({ gestureStatus: status, gestureError: error ?? null }),
+
+  setGestureLock: (state, progress) =>
+    set({ gestureLockState: state, gestureLockProgress: progress }),
 }));
 
 export const getViewerState = () => useViewerStore.getState();

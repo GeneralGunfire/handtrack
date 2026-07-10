@@ -10,7 +10,6 @@ const MIDDLE_TIP = 12;
 const RING_TIP = 16;
 const PINKY_TIP = 20;
 
-const PINCH_THRESHOLD = 0.06;
 const CURL_RATIO_THRESHOLD = 0.75;
 
 function distance(a: Landmark, b: Landmark): number {
@@ -44,16 +43,20 @@ function isThumbsUp(landmarks: Landmark[]): boolean {
   return indexCurled && middleCurled && thumbExtendedUp;
 }
 
+/**
+ * Classifies discrete pose (for swipe/pan/slideshow gestures) but always
+ * reports pinchDistance/handSpan as continuous measurements — zoom is
+ * driven by smoothed distance tracking in HandLockTracker, not by crossing
+ * a pose threshold, since that caused zoom to snap back when fingers
+ * relaxed even slightly.
+ */
 export function classifyPose(landmarks: Landmark[]): RecognizedGesture {
   const position = centroid(landmarks);
-
   const pinchDistance = distance(landmarks[THUMB_TIP], landmarks[INDEX_TIP]);
-  if (pinchDistance < PINCH_THRESHOLD) {
-    return { pose: 'pinch', position, pinchDistance };
-  }
+  const handSpan = distance(landmarks[WRIST], landmarks[MIDDLE_MCP]);
 
   if (isThumbsUp(landmarks)) {
-    return { pose: 'thumbs_up', position };
+    return { pose: 'thumbs_up', position, pinchDistance, handSpan };
   }
 
   const fingersCurled = [
@@ -64,12 +67,12 @@ export function classifyPose(landmarks: Landmark[]): RecognizedGesture {
   ];
 
   if (fingersCurled.every(Boolean)) {
-    return { pose: 'fist', position };
+    return { pose: 'fist', position, pinchDistance, handSpan };
   }
 
   if (fingersCurled.every((curled) => !curled)) {
-    return { pose: 'open_palm', position };
+    return { pose: 'open_palm', position, pinchDistance, handSpan };
   }
 
-  return { pose: 'unknown' as HandPose, position };
+  return { pose: 'unknown' as HandPose, position, pinchDistance, handSpan };
 }

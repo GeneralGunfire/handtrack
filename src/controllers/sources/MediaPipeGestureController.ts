@@ -2,6 +2,8 @@ import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import type { Dispatch, GestureController as IGestureController } from '@/types/action';
 import { classifyPose } from '../gestures/classifyPose';
 import { GestureInterpreter } from '../gestures/GestureInterpreter';
+import { HandLockTracker } from '../gestures/HandLockTracker';
+import type { LockState } from '../gestures/gestureTypes';
 
 const WASM_BASE_URL =
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm';
@@ -12,14 +14,18 @@ export type GestureControllerStatus = 'idle' | 'loading' | 'active' | 'error';
 
 interface MediaPipeGestureControllerOptions {
   onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
+  onLockStateChange?: (state: LockState, progress: number) => void;
+  /** Current viewer zoom scale, so open-palm can decide pan vs. swipe. */
+  getZoomScale?: () => number;
 }
 
 /**
  * Real hand-tracking implementation of GestureController. Reads webcam
- * frames, runs MediaPipe's HandLandmarker, classifies the pose, and feeds
- * it through GestureInterpreter to produce Actions — the same Action union
- * MouseKeyboardSource produces. InputManager and the Viewer are unaware
- * this exists versus the NoOp stub.
+ * frames, runs MediaPipe's HandLandmarker, classifies the pose, gates it
+ * through HandLockTracker (calibration + smoothing + lost detection), and
+ * feeds locked frames through GestureInterpreter to produce Actions — the
+ * same Action union MouseKeyboardSource produces. InputManager and the
+ * Viewer are unaware this exists versus the NoOp stub.
  */
 export class MediaPipeGestureController implements IGestureController {
   private _isTracking = false;
@@ -27,11 +33,21 @@ export class MediaPipeGestureController implements IGestureController {
   private stream: MediaStream | null = null;
   private landmarker: HandLandmarker | null = null;
   private rafId: number | null = null;
-  private interpreter = new GestureInterpreter();
+  private interpreter: GestureInterpreter;
+  private lockTracker: HandLockTracker;
   private onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
 
   constructor(options: MediaPipeGestureControllerOptions = {}) {
     this.onStatusChange = options.onStatusChange;
+    this.interpreter = new GestureInterpreter({
+      getZoomScale: options.getZoomScale ?? (() => 1),
+    });
+    this.lockTracker = new HandLockTracker((change) => {
+      options.onLockStateChange?.(change.state, change.lockProgress);
+      if (change.state !== 'locked') {
+        this.interpreter.reset();
+      }
+    });
   }
 
   get isTracking(): boolean {
@@ -50,6 +66,7 @@ export class MediaPipeGestureController implements IGestureController {
   async enable(): Promise<void> {
     if (this._isTracking) return;
     this.onStatusChange?.('loading');
+    this.lockTracker.reset();
 
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
@@ -91,6 +108,8 @@ export class MediaPipeGestureController implements IGestureController {
     this.stream = null;
     this.video = null;
     this._isTracking = false;
+    this.lockTracker.reset();
+    this.interpreter.reset();
     this.onStatusChange?.('idle');
   }
 
@@ -100,11 +119,11 @@ export class MediaPipeGestureController implements IGestureController {
     const timestampMs = performance.now();
     const result = this.landmarker.detectForVideo(this.video, timestampMs);
 
-    if (result.landmarks.length > 0) {
-      const gesture = classifyPose(result.landmarks[0]);
-      this.interpreter.process(gesture, timestampMs);
-    } else {
-      this.interpreter.process(null, timestampMs);
+    const raw = result.landmarks.length > 0 ? classifyPose(result.landmarks[0]) : null;
+    const locked = this.lockTracker.process(raw, timestampMs);
+
+    if (locked) {
+      this.interpreter.process(locked, timestampMs);
     }
 
     this.rafId = requestAnimationFrame(this.loop);

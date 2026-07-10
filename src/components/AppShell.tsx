@@ -10,6 +10,7 @@ import { ThumbnailStrip } from '@/components/Thumbnails/ThumbnailStrip';
 import { FloatingControls } from '@/components/Controls/FloatingControls';
 import { ImageCounter } from '@/components/Controls/ImageCounter';
 import { MetadataOverlay } from '@/components/Controls/MetadataOverlay';
+import { GestureCalibrationOverlay } from '@/components/Controls/GestureCalibrationOverlay';
 
 function ViewerContent() {
   const uiVisible = useViewerStore((state) => state.uiVisible);
@@ -61,6 +62,8 @@ function ViewerContent() {
         <div className="pointer-events-none absolute left-5 top-5">
           <MetadataOverlay />
         </div>
+
+        <GestureCalibrationOverlay />
       </div>
     </Dropzone>
   );
