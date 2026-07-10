@@ -3,7 +3,7 @@ import type { Dispatch, GestureController as IGestureController } from '@/types/
 import { classifyPose } from '../gestures/classifyPose';
 import { GestureInterpreter } from '../gestures/GestureInterpreter';
 import { HandLockTracker } from '../gestures/HandLockTracker';
-import type { LockState } from '../gestures/gestureTypes';
+import type { GestureMode, LockState } from '../gestures/gestureTypes';
 
 const WASM_BASE_URL =
   'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm';
@@ -15,8 +15,7 @@ export type GestureControllerStatus = 'idle' | 'loading' | 'active' | 'error';
 interface MediaPipeGestureControllerOptions {
   onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
   onLockStateChange?: (state: LockState, progress: number) => void;
-  /** Current viewer zoom scale, so open-palm can decide pan vs. swipe. */
-  getZoomScale?: () => number;
+  onModeChange?: (mode: GestureMode) => void;
 }
 
 /**
@@ -40,7 +39,7 @@ export class MediaPipeGestureController implements IGestureController {
   constructor(options: MediaPipeGestureControllerOptions = {}) {
     this.onStatusChange = options.onStatusChange;
     this.interpreter = new GestureInterpreter({
-      getZoomScale: options.getZoomScale ?? (() => 1),
+      onModeChange: (change) => options.onModeChange?.(change.mode),
     });
     this.lockTracker = new HandLockTracker((change) => {
       options.onLockStateChange?.(change.state, change.lockProgress);

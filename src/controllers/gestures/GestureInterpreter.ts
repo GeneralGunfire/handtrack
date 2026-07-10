@@ -1,58 +1,63 @@
 import type { Dispatch } from '@/types/action';
-import type { HandPose, Landmark } from './gestureTypes';
+import type { GestureMode, HandPose, Landmark } from './gestureTypes';
 import type { SmoothedGesture } from './HandLockTracker';
 
 const SWIPE_MIN_DISTANCE = 0.09;
 const SWIPE_MAX_DURATION_MS = 900;
 const SWIPE_COOLDOWN_MS = 700;
 const PAN_SENSITIVITY = 800;
-const POSE_HOLD_TO_TRIGGER_MS = 500;
-const FIST_STOP_COOLDOWN_MS = 900;
 
-/** Zoom multiplier per unit change in normalized pinch ratio; continuous, not threshold-triggered. */
-const ZOOM_SENSITIVITY = 4;
+/** Zoom multiplier per unit change in normalized hand-span (depth proxy). */
+const ZOOM_SENSITIVITY = 5;
 
-/** Open palm only pans (instead of swiping) once the viewer is zoomed in past this scale. */
-const PAN_ZOOM_THRESHOLD = 1.05;
+/** A mode-toggle gesture must be held this long before it fires, so passing through
+ *  a pose on the way to another one doesn't accidentally trigger a mode switch. */
+const MODE_TOGGLE_HOLD_MS = 350;
+const MODE_TOGGLE_COOLDOWN_MS = 500;
 
 interface TrackedSwipe {
   startPosition: Landmark;
   startTimeMs: number;
 }
 
-export interface GestureInterpreterContext {
-  /** Current viewer zoom scale, so open-palm movement can decide pan vs. swipe. */
-  getZoomScale: () => number;
+export interface GestureModeChange {
+  mode: GestureMode;
+}
+
+export interface GestureInterpreterOptions {
+  onModeChange?: (change: GestureModeChange) => void;
 }
 
 /**
  * Converts a stream of locked, smoothed hand gestures into semantic
- * Actions. Only ever receives frames once HandLockTracker has confirmed a
- * stable lock, so it never has to guess whether a reading is trustworthy —
- * it only has to decide what the reading means.
+ * Actions using an explicit mode state machine:
  *
- * Note on the camera feed: the video is mirrored (selfie view), so a hand
- * moving to the user's right decreases raw landmark x. Swipe direction
- * below is chosen to match what the user sees on screen, not raw x sign.
+ *   neutral --[fist held]--> zoom   --[fist held]--> neutral
+ *   neutral --[palm held]--> pan    --[palm held]--> neutral
+ *
+ * Only one mode is active at a time. In neutral, a two-finger point
+ * moving left/right swipes to the next/previous image. Only ever
+ * receives frames once HandLockTracker has confirmed a stable lock.
  */
 export class GestureInterpreter {
   private dispatch: Dispatch | null = null;
-  private context: GestureInterpreterContext;
+  private onModeChange?: (change: GestureModeChange) => void;
 
-  private openPalmTracker: TrackedSwipe | null = null;
+  private mode: GestureMode = 'neutral';
+
+  private pointSwipeTracker: TrackedSwipe | null = null;
   private lastSwipeAtMs = 0;
 
-  private lastNormalizedPinch: number | null = null;
   private lastPanPosition: Landmark | null = null;
+  private lastHandSpan: number | null = null;
 
   private currentPose: HandPose = 'unknown';
   private poseSinceMs = 0;
-  private thumbsUpTriggered = false;
-  private palmHoldTriggered = false;
-  private lastFistStopAtMs = 0;
+  private modeToggleArmed = true;
+  private lastModeToggleAtMs = 0;
 
-  constructor(context: GestureInterpreterContext) {
-    this.context = context;
+  constructor(options: GestureInterpreterOptions = {}) {
+    this.onModeChange = options.onModeChange;
   }
 
   start(dispatch: Dispatch): void {
@@ -65,118 +70,112 @@ export class GestureInterpreter {
   }
 
   reset(): void {
-    this.openPalmTracker = null;
-    this.lastNormalizedPinch = null;
+    this.mode = 'neutral';
+    this.pointSwipeTracker = null;
     this.lastPanPosition = null;
+    this.lastHandSpan = null;
     this.currentPose = 'unknown';
-    this.thumbsUpTriggered = false;
-    this.palmHoldTriggered = false;
+    this.modeToggleArmed = true;
+    this.onModeChange?.({ mode: 'neutral' });
   }
 
   /** Feed one locked, smoothed frame. Call reset() instead when lock is lost. */
   process(gesture: SmoothedGesture, timestampMs: number): void {
     if (!this.dispatch) return;
 
-    if (gesture.pose !== this.currentPose) {
+    const poseChanged = gesture.pose !== this.currentPose;
+    if (poseChanged) {
       this.currentPose = gesture.pose;
       this.poseSinceMs = timestampMs;
-      this.thumbsUpTriggered = false;
-      this.palmHoldTriggered = false;
-      if (gesture.pose !== 'open_palm') {
-        this.openPalmTracker = null;
-        this.lastPanPosition = null;
-      }
+      this.modeToggleArmed = true;
+      if (gesture.pose !== 'two_finger_point') this.pointSwipeTracker = null;
+      if (gesture.pose !== 'open_palm') this.lastPanPosition = null;
+      if (gesture.pose !== 'fist') this.lastHandSpan = null;
     }
 
-    // Continuous pinch tracking runs regardless of discrete pose, so it
-    // never resets mid-gesture the way threshold-triggered pinch did.
-    this.handlePinchZoom(gesture);
+    const heldMs = timestampMs - this.poseSinceMs;
+    const canToggle =
+      this.modeToggleArmed && timestampMs - this.lastModeToggleAtMs > MODE_TOGGLE_COOLDOWN_MS;
 
-    switch (gesture.pose) {
-      case 'open_palm':
-        this.handleOpenPalm(gesture, timestampMs);
-        break;
-      case 'fist':
-        this.handleFistStop(timestampMs);
-        break;
-      case 'thumbs_up':
-        this.handleThumbsUp(timestampMs);
-        break;
-      default:
-        break;
+    if (this.mode === 'neutral') {
+      if (gesture.pose === 'fist' && canToggle && heldMs >= MODE_TOGGLE_HOLD_MS) {
+        this.enterMode('zoom', timestampMs);
+      } else if (gesture.pose === 'open_palm' && canToggle && heldMs >= MODE_TOGGLE_HOLD_MS) {
+        this.enterMode('pan', timestampMs);
+      } else if (gesture.pose === 'two_finger_point') {
+        this.handleSwipe(gesture, timestampMs);
+      }
+      return;
+    }
+
+    if (this.mode === 'zoom') {
+      if (gesture.pose === 'fist' && canToggle && heldMs >= MODE_TOGGLE_HOLD_MS) {
+        this.enterMode('neutral', timestampMs);
+        return;
+      }
+      this.handleZoomDepth(gesture);
+      return;
+    }
+
+    if (this.mode === 'pan') {
+      if (gesture.pose === 'open_palm' && canToggle && heldMs >= MODE_TOGGLE_HOLD_MS) {
+        this.enterMode('neutral', timestampMs);
+        return;
+      }
+      this.handlePan(gesture);
+      return;
     }
   }
 
-  private handleOpenPalm(gesture: SmoothedGesture, timestampMs: number): void {
-    const isZoomedIn = this.context.getZoomScale() > PAN_ZOOM_THRESHOLD;
+  private enterMode(mode: GestureMode, timestampMs: number): void {
+    this.mode = mode;
+    this.modeToggleArmed = false;
+    this.lastModeToggleAtMs = timestampMs;
+    this.lastPanPosition = null;
+    this.lastHandSpan = null;
+    this.onModeChange?.({ mode });
+  }
 
-    if (isZoomedIn) {
-      this.openPalmTracker = null;
-      if (this.lastPanPosition) {
-        const dx = (gesture.position.x - this.lastPanPosition.x) * -PAN_SENSITIVITY;
-        const dy = (gesture.position.y - this.lastPanPosition.y) * PAN_SENSITIVITY;
-        this.dispatch?.({ type: 'PAN', dx, dy });
-      }
-      this.lastPanPosition = gesture.position;
+  private handleSwipe(gesture: SmoothedGesture, timestampMs: number): void {
+    if (!this.pointSwipeTracker) {
+      this.pointSwipeTracker = { startPosition: gesture.position, startTimeMs: timestampMs };
       return;
     }
-    this.lastPanPosition = null;
 
-    if (!this.openPalmTracker) {
-      this.openPalmTracker = { startPosition: gesture.position, startTimeMs: timestampMs };
-    }
-
-    const elapsed = timestampMs - this.openPalmTracker.startTimeMs;
-    // Mirrored feed: user moving hand to their own right decreases raw x.
-    const dx = gesture.position.x - this.openPalmTracker.startPosition.x;
+    const elapsed = timestampMs - this.pointSwipeTracker.startTimeMs;
+    // Camera feed is unmirrored; a hand moving to the user's own right
+    // decreases raw landmark x, so a negative dx means "moved right".
+    const dx = gesture.position.x - this.pointSwipeTracker.startPosition.x;
 
     if (elapsed <= SWIPE_MAX_DURATION_MS && Math.abs(dx) >= SWIPE_MIN_DISTANCE) {
       const canSwipe = timestampMs - this.lastSwipeAtMs > SWIPE_COOLDOWN_MS;
       if (canSwipe) {
         this.dispatch?.({ type: dx < 0 ? 'NEXT' : 'PREVIOUS' });
         this.lastSwipeAtMs = timestampMs;
-        this.openPalmTracker = null;
+        this.pointSwipeTracker = null;
       }
     } else if (elapsed > SWIPE_MAX_DURATION_MS) {
-      this.openPalmTracker = { startPosition: gesture.position, startTimeMs: timestampMs };
-    }
-
-    if (
-      !this.palmHoldTriggered &&
-      timestampMs - this.poseSinceMs > POSE_HOLD_TO_TRIGGER_MS &&
-      Math.abs(dx) < SWIPE_MIN_DISTANCE / 2
-    ) {
-      this.palmHoldTriggered = true;
-      this.dispatch?.({ type: 'TOGGLE_UI' });
+      this.pointSwipeTracker = { startPosition: gesture.position, startTimeMs: timestampMs };
     }
   }
 
-  /** A held fist is an explicit "stop" gesture: halts slideshow and cancels in-flight swipe/pan tracking. */
-  private handleFistStop(timestampMs: number): void {
-    this.openPalmTracker = null;
-    this.lastPanPosition = null;
-
-    if (timestampMs - this.lastFistStopAtMs > FIST_STOP_COOLDOWN_MS) {
-      this.lastFistStopAtMs = timestampMs;
-      this.dispatch?.({ type: 'STOP_SLIDESHOW' });
+  private handlePan(gesture: SmoothedGesture): void {
+    if (this.lastPanPosition) {
+      const dx = (gesture.position.x - this.lastPanPosition.x) * -PAN_SENSITIVITY;
+      const dy = (gesture.position.y - this.lastPanPosition.y) * PAN_SENSITIVITY;
+      this.dispatch?.({ type: 'PAN', dx, dy });
     }
+    this.lastPanPosition = gesture.position;
   }
 
-  private handlePinchZoom(gesture: SmoothedGesture): void {
-    if (this.lastNormalizedPinch !== null) {
-      // Fingers closer together (smaller ratio) = zoom in, so invert the sign.
-      const delta = -(gesture.normalizedPinch - this.lastNormalizedPinch) * ZOOM_SENSITIVITY;
+  private handleZoomDepth(gesture: SmoothedGesture): void {
+    if (this.lastHandSpan !== null && this.lastHandSpan > 0) {
+      // Larger hand span = closer to camera = zoom in.
+      const delta = (gesture.handSpan / this.lastHandSpan - 1) * ZOOM_SENSITIVITY;
       if (Math.abs(delta) > 0.0015) {
         this.dispatch?.({ type: 'ZOOM', delta });
       }
     }
-    this.lastNormalizedPinch = gesture.normalizedPinch;
-  }
-
-  private handleThumbsUp(timestampMs: number): void {
-    if (!this.thumbsUpTriggered && timestampMs - this.poseSinceMs > POSE_HOLD_TO_TRIGGER_MS) {
-      this.thumbsUpTriggered = true;
-      this.dispatch?.({ type: 'TOGGLE_SLIDESHOW' });
-    }
+    this.lastHandSpan = gesture.handSpan;
   }
 }

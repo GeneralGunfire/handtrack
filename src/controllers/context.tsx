@@ -63,7 +63,9 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
       onLockStateChange: (state, progress) => {
         useViewerStore.getState().setGestureLock(state, progress);
       },
-      getZoomScale: () => useViewerStore.getState().zoomPan.scale,
+      onModeChange: (mode) => {
+        useViewerStore.getState().setGestureMode(mode);
+      },
     }),
   );
 
