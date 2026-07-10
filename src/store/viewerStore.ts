@@ -28,6 +28,9 @@ interface ViewerState {
   transitionType: TransitionType;
   cursorPosition: Point;
 
+  gestureStatus: 'idle' | 'loading' | 'active' | 'error';
+  gestureError: string | null;
+
   addImages: (images: ImageItem[]) => void;
   removeImage: (id: string) => void;
   reorderImages: (fromIndex: number, toIndex: number) => void;
@@ -49,6 +52,8 @@ interface ViewerState {
   toggleSlideshow: () => void;
 
   setCursorPosition: (position: Point) => void;
+
+  setGestureStatus: (status: 'idle' | 'loading' | 'active' | 'error', error?: string) => void;
 }
 
 const DEFAULT_ZOOM_PAN: ZoomPanState = { scale: 1, x: 0, y: 0 };
@@ -69,6 +74,9 @@ export const useViewerStore = create<ViewerState>((set) => ({
 
   transitionType: 'fade',
   cursorPosition: { x: 0, y: 0 },
+
+  gestureStatus: 'idle',
+  gestureError: null,
 
   addImages: (images) =>
     set((state) => ({
@@ -167,6 +175,9 @@ export const useViewerStore = create<ViewerState>((set) => ({
   toggleSlideshow: () => set((state) => ({ isSlideshowActive: !state.isSlideshowActive })),
 
   setCursorPosition: (position) => set({ cursorPosition: position }),
+
+  setGestureStatus: (status, error) =>
+    set({ gestureStatus: status, gestureError: error ?? null }),
 }));
 
 export const getViewerState = () => useViewerStore.getState();

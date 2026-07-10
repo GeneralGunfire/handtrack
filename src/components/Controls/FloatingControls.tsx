@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useViewerStore } from '@/store/viewerStore';
 import { useInputManager } from '@/controllers/context';
+import { GestureToggle } from './GestureToggle';
 
 interface IconButtonProps {
   label: string;
@@ -102,6 +103,10 @@ export function FloatingControls() {
           <path d="M12 11v5M12 8v.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
         </svg>
       </IconButton>
+
+      <div className="mx-1 h-5 w-px bg-white/10" />
+
+      <GestureToggle />
     </div>
   );
 }

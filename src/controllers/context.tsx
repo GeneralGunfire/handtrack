@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { InputManager } from './InputManager';
 import { MouseKeyboardSource } from './sources/MouseKeyboardSource';
-import { NoOpGestureController } from './sources/GestureController';
+import { MediaPipeGestureController } from './sources/MediaPipeGestureController';
 import { useViewerStore } from '@/store/viewerStore';
 import { computeActualScale, MAX_SCALE, MIN_SCALE } from '@/utils/geometry';
 import { clamp } from '@/utils/clamp';
@@ -10,6 +10,8 @@ import { clamp } from '@/utils/clamp';
 interface InputManagerContextValue {
   manager: InputManager;
   bindStageElement: (element: HTMLElement | null) => void;
+  enableGestures: () => Promise<void>;
+  disableGestures: () => Promise<void>;
 }
 
 const InputManagerContext = createContext<InputManagerContextValue | null>(null);
@@ -31,6 +33,15 @@ export function useStageBinding(): (element: HTMLElement | null) => void {
   return ctx.bindStageElement;
 }
 
+/** Exposes camera-driven gesture control start/stop, independent of the always-on InputManager wiring. */
+export function useGestureControls(): { enable: () => Promise<void>; disable: () => Promise<void> } {
+  const ctx = useContext(InputManagerContext);
+  if (!ctx) {
+    throw new Error('useGestureControls must be used within InputManagerProvider');
+  }
+  return { enable: ctx.enableGestures, disable: ctx.disableGestures };
+}
+
 /** Ref set by the Viewer stage so zoom math knows the rendered image size. */
 export const stageMetricsRef = {
   containerSize: { width: 0, height: 0 },
@@ -44,7 +55,13 @@ interface InputManagerProviderProps {
 export function InputManagerProvider({ children }: InputManagerProviderProps) {
   const manager = useMemo(() => new InputManager(), []);
   const mouseKeyboardSourceRef = useRef(new MouseKeyboardSource());
-  const gestureControllerRef = useRef(new NoOpGestureController());
+  const gestureControllerRef = useRef(
+    new MediaPipeGestureController({
+      onStatusChange: (status, error) => {
+        useViewerStore.getState().setGestureStatus(status, error);
+      },
+    }),
+  );
 
   useEffect(() => {
     const unregisterMouse = manager.registerSource(mouseKeyboardSourceRef.current);
@@ -139,6 +156,8 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
           source.bindElement(element);
         }
       },
+      enableGestures: () => gestureControllerRef.current.enable(),
+      disableGestures: () => gestureControllerRef.current.disable(),
     }),
     [manager],
   );
