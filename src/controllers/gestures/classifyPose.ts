@@ -2,6 +2,7 @@ import type { HandPose, Landmark, RecognizedGesture } from './gestureTypes';
 
 // MediaPipe Hands landmark indices.
 const WRIST = 0;
+const THUMB_TIP = 4;
 const INDEX_MCP = 5;
 const INDEX_TIP = 8;
 const MIDDLE_MCP = 9;
@@ -38,23 +39,22 @@ function isFingerCurled(landmarks: Landmark[], tipIndex: number, mcpIndex: numbe
 export function classifyPose(landmarks: Landmark[]): RecognizedGesture {
   const position = centroid(landmarks);
   const handSpan = distance(landmarks[WRIST], landmarks[MIDDLE_MCP]);
+  const pinchDistance = distance(landmarks[THUMB_TIP], landmarks[INDEX_TIP]);
 
   const indexCurled = isFingerCurled(landmarks, INDEX_TIP, INDEX_MCP);
   const middleCurled = isFingerCurled(landmarks, MIDDLE_TIP, MIDDLE_MCP);
   const ringCurled = isFingerCurled(landmarks, RING_TIP, RING_MCP);
   const pinkyCurled = isFingerCurled(landmarks, PINKY_TIP, PINKY_MCP);
 
-  if (!indexCurled && !middleCurled && ringCurled && pinkyCurled) {
-    return { pose: 'two_finger_point', position, handSpan };
+  const fingersCurled = [indexCurled, middleCurled, ringCurled, pinkyCurled];
+
+  if (fingersCurled.every(Boolean)) {
+    return { pose: 'fist', position, handSpan, pinchDistance };
   }
 
-  if (indexCurled && middleCurled && ringCurled && pinkyCurled) {
-    return { pose: 'fist', position, handSpan };
+  if (fingersCurled.every((curled) => !curled)) {
+    return { pose: 'open_palm', position, handSpan, pinchDistance };
   }
 
-  if (!indexCurled && !middleCurled && !ringCurled && !pinkyCurled) {
-    return { pose: 'open_palm', position, handSpan };
-  }
-
-  return { pose: 'unknown' as HandPose, position, handSpan };
+  return { pose: 'unknown' as HandPose, position, handSpan, pinchDistance };
 }

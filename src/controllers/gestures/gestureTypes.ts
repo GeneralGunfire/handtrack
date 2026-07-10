@@ -4,17 +4,19 @@ export interface Landmark {
   z: number;
 }
 
-export type HandPose = 'open_palm' | 'fist' | 'two_finger_point' | 'unknown';
+export type HandPose = 'open_palm' | 'fist' | 'unknown';
 
 export interface RecognizedGesture {
   pose: HandPose;
   /** Normalized 0-1 position of the hand centroid. */
   position: Landmark;
-  /** Wrist-to-middle-MCP distance — a stable proxy for "hand size on screen" (bigger = closer
-   *  to camera), used both to normalize other measurements and to drive depth-based zoom. */
+  /** Wrist-to-middle-MCP distance — a stable proxy for "hand size on screen", used to
+   *  normalize pinch distance so zoom sensitivity doesn't depend on distance from camera. */
   handSpan: number;
+  /** Raw thumb-tip to index-tip distance, in the same normalized units as landmarks. */
+  pinchDistance: number;
 }
 
 export type LockState = 'searching' | 'locking' | 'locked' | 'lost';
 
-export type GestureMode = 'neutral' | 'zoom' | 'pan';
+export type GestureMode = 'neutral' | 'pan_zoom';

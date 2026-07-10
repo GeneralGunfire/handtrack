@@ -1,10 +1,9 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useViewerStore } from '@/store/viewerStore';
 
-const MODE_LABEL: Record<'neutral' | 'zoom' | 'pan', string> = {
-  neutral: 'Identifying gesture',
-  zoom: 'Zoom mode — move hand closer/farther, fist to exit',
-  pan: 'Pan mode — move hand to look around, palm to exit',
+const MODE_LABEL: Record<'neutral' | 'pan_zoom', string> = {
+  neutral: 'Identifying gesture — fist + move to swipe, palm to pan/zoom',
+  pan_zoom: 'Pan & zoom — move hand to pan, pinch to zoom, palm to exit',
 };
 
 export function GestureModeIndicator() {

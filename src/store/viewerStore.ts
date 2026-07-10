@@ -32,7 +32,7 @@ interface ViewerState {
   gestureError: string | null;
   gestureLockState: 'searching' | 'locking' | 'locked' | 'lost';
   gestureLockProgress: number;
-  gestureMode: 'neutral' | 'zoom' | 'pan';
+  gestureMode: 'neutral' | 'pan_zoom';
 
   addImages: (images: ImageItem[]) => void;
   removeImage: (id: string) => void;
@@ -58,7 +58,7 @@ interface ViewerState {
 
   setGestureStatus: (status: 'idle' | 'loading' | 'active' | 'error', error?: string) => void;
   setGestureLock: (state: 'searching' | 'locking' | 'locked' | 'lost', progress: number) => void;
-  setGestureMode: (mode: 'neutral' | 'zoom' | 'pan') => void;
+  setGestureMode: (mode: 'neutral' | 'pan_zoom') => void;
 }
 
 const DEFAULT_ZOOM_PAN: ZoomPanState = { scale: 1, x: 0, y: 0 };

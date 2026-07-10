@@ -7,8 +7,12 @@ const LOCK_STABILITY_TOLERANCE = 0.035;
 const LOST_AFTER_MISSED_FRAMES = 8;
 const POSITION_SMOOTHING = 0.35;
 const SPAN_SMOOTHING = 0.2;
+const PINCH_SMOOTHING = 0.4;
 
-export type SmoothedGesture = RecognizedGesture;
+export interface SmoothedGesture extends RecognizedGesture {
+  /** Smoothed pinch distance normalized by hand span — stable across distance-from-camera changes. */
+  normalizedPinch: number;
+}
 
 export interface LockStateChange {
   state: LockState;
@@ -30,6 +34,7 @@ export class HandLockTracker {
 
   private smoothedPosition: Landmark | null = null;
   private smoothedSpan: number | null = null;
+  private smoothedPinch: number | null = null;
 
   private onLockStateChange: (change: LockStateChange) => void;
 
@@ -47,6 +52,7 @@ export class HandLockTracker {
     this.missedFrames = 0;
     this.smoothedPosition = null;
     this.smoothedSpan = null;
+    this.smoothedPinch = null;
   }
 
   /** Feed one frame. Returns the smoothed gesture only when locked; null otherwise. */
@@ -66,6 +72,7 @@ export class HandLockTracker {
 
     this.smoothedPosition = ema(this.smoothedPosition, raw.position, POSITION_SMOOTHING);
     this.smoothedSpan = emaScalar(this.smoothedSpan, raw.handSpan, SPAN_SMOOTHING);
+    this.smoothedPinch = emaScalar(this.smoothedPinch, raw.pinchDistance, PINCH_SMOOTHING);
 
     if (this.state === 'searching' || this.state === 'lost') {
       this.setState('locking', 0);
@@ -98,6 +105,8 @@ export class HandLockTracker {
       ...raw,
       position: this.smoothedPosition,
       handSpan: this.smoothedSpan,
+      pinchDistance: this.smoothedPinch,
+      normalizedPinch: this.smoothedSpan > 0 ? this.smoothedPinch / this.smoothedSpan : 0,
     };
   }
 
