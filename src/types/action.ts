@@ -3,24 +3,24 @@ export interface Point {
   y: number;
 }
 
+export type PointerSource = 'mouse' | 'hand';
+
 export type Action =
-  | { type: 'NEXT' }
-  | { type: 'PREVIOUS' }
-  | { type: 'SELECT'; index: number }
-  /** Rotate the camera around the object. Deltas are in radians. */
+  /** Rotate the camera around the graph. Deltas are in radians. */
   | { type: 'ORBIT'; dyaw: number; dpitch: number }
-  /** Dolly toward/away from the object. Positive delta zooms in; applied multiplicatively. */
-  | { type: 'ZOOM'; delta: number; origin?: Point }
-  /** Slide the camera target parallel to the view plane, in world units. */
+  /** Dolly toward/away from the focus point. Positive zooms in; applied multiplicatively. */
+  | { type: 'ZOOM'; delta: number }
+  /** Slide the camera target parallel to the view plane. Deltas are fractions of the view. */
   | { type: 'PAN'; dx: number; dy: number }
-  /** Reset the camera to its framed default view. */
+  /** Aim the targeting cursor. x/y are normalized 0..1 screen coordinates. */
+  | { type: 'AIM'; x: number; y: number; source: PointerSource }
+  /** Commit on whatever the cursor is aiming at (click / pinch-tap). */
+  | { type: 'TAP' }
+  /** Reset the camera to the framed default view. */
   | { type: 'FIT' }
   | { type: 'TOGGLE_UI' }
-  | { type: 'TOGGLE_SLIDESHOW' }
-  | { type: 'START_SLIDESHOW' }
-  | { type: 'STOP_SLIDESHOW' }
-  | { type: 'EXIT' }
-  | { type: 'CURSOR'; position: Point };
+  /** Close preview / clear selection / reset. */
+  | { type: 'EXIT' };
 
 export type Dispatch = (action: Action) => void;
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useViewerStore } from '@/store/viewerStore';
+import { useGraphStore } from '@/store/graphStore';
 import { latestHandFrameRef } from '@/controllers/context';
 import { extractFeatures } from '@/controllers/gestures/handEngine';
 import type { Landmark } from '@/controllers/gestures/gestureTypes';
@@ -30,7 +30,7 @@ const HAND_COLORS = ['#22d3ee', '#f472b6'];
  * adjustable via the S/M/L buttons.
  */
 export function HandSkeletonOverlay() {
-  const gestureStatus = useViewerStore((state) => state.gestureStatus);
+  const gestureStatus = useGraphStore((state) => state.gestureStatus);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number | null>(null);
   const [sizeIndex, setSizeIndex] = useState(1);

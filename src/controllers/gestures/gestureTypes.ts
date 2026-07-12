@@ -10,6 +10,10 @@ export interface HandFeatures {
   palm: Landmark;
   /** Midpoint between thumb tip and index tip — the "grab point" while pinching. */
   pinchPoint: Landmark;
+  /** Index fingertip — the aiming point while pointing. */
+  indexTip: Landmark;
+  /** Whether the index finger is extended (pointing). */
+  indexExtended: boolean;
   /** Wrist-to-middle-MCP distance; proxy for hand size on screen. Normalizes pinch. */
   handSpan: number;
   /** Thumb-tip to index-tip distance divided by handSpan. Small = pinching. */

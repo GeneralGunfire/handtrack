@@ -1,10 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { useViewerStore } from '@/store/viewerStore';
+import { useGraphStore } from '@/store/graphStore';
 
 /** Prompt shown while gesture control is on but no hands are in view. */
 export function GestureCalibrationOverlay() {
-  const gestureStatus = useViewerStore((state) => state.gestureStatus);
-  const handCount = useViewerStore((state) => state.gestureHands);
+  const gestureStatus = useGraphStore((state) => state.gestureStatus);
+  const handCount = useGraphStore((state) => state.gestureHands);
 
   const visible = gestureStatus === 'active' && handCount === 0;
 
@@ -23,8 +23,8 @@ export function GestureCalibrationOverlay() {
             <div>
               <p className="text-sm font-medium text-ink-0">Show a hand to the camera</p>
               <p className="mt-0.5 text-xs text-ink-1">
-                Pinch to rotate · pinch with both hands to zoom &amp; pan · open-palm swipe to
-                switch · hold a fist to reset
+                Point to aim · quick pinch to select · pinch &amp; drag to rotate · both hands
+                pinch to zoom &amp; pan · hold a fist to reset
               </p>
             </div>
           </div>

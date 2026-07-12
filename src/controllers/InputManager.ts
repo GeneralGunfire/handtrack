@@ -1,25 +1,17 @@
-import type { Action, Dispatch, InputSource, Point } from '@/types/action';
+import type { Action, Dispatch, InputSource } from '@/types/action';
 
 type ActionListener = (action: Action) => void;
 
 /**
  * Sole entry point for turning user intent into viewer state changes.
- * Sources (mouse/keyboard today, gestures later) never talk to the
- * store or DOM directly — they only push Actions here.
+ * Sources (mouse/keyboard, hand gestures) never talk to the store or DOM
+ * directly — they only push Actions here.
  */
 export class InputManager {
   private sources = new Set<InputSource>();
   private listeners = new Set<ActionListener>();
-  private _cursorPosition: Point = { x: 0, y: 0 };
-
-  get cursorPosition(): Point {
-    return this._cursorPosition;
-  }
 
   private dispatch: Dispatch = (action) => {
-    if (action.type === 'CURSOR') {
-      this._cursorPosition = action.position;
-    }
     for (const listener of this.listeners) {
       listener(action);
     }
@@ -50,44 +42,20 @@ export class InputManager {
     this.listeners.clear();
   }
 
-  next(): void {
-    this.dispatch({ type: 'NEXT' });
-  }
-
-  previous(): void {
-    this.dispatch({ type: 'PREVIOUS' });
-  }
-
-  select(index: number): void {
-    this.dispatch({ type: 'SELECT', index });
-  }
-
-  zoom(delta: number, origin?: Point): void {
-    this.dispatch({ type: 'ZOOM', delta, origin });
-  }
-
-  pan(dx: number, dy: number): void {
-    this.dispatch({ type: 'PAN', dx, dy });
-  }
-
-  fitToScreen(): void {
-    this.dispatch({ type: 'FIT' });
+  zoom(delta: number): void {
+    this.dispatch({ type: 'ZOOM', delta });
   }
 
   orbit(dyaw: number, dpitch: number): void {
     this.dispatch({ type: 'ORBIT', dyaw, dpitch });
   }
 
+  fitToScreen(): void {
+    this.dispatch({ type: 'FIT' });
+  }
+
   toggleUI(): void {
     this.dispatch({ type: 'TOGGLE_UI' });
-  }
-
-  startSlideshow(): void {
-    this.dispatch({ type: 'START_SLIDESHOW' });
-  }
-
-  stopSlideshow(): void {
-    this.dispatch({ type: 'STOP_SLIDESHOW' });
   }
 
   exit(): void {

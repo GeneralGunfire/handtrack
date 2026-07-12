@@ -4,7 +4,7 @@ import { InputManager } from './InputManager';
 import { MouseKeyboardSource } from './sources/MouseKeyboardSource';
 import { MediaPipeGestureController } from './sources/MediaPipeGestureController';
 import type { HandFrameUpdate } from './sources/MediaPipeGestureController';
-import { useViewerStore } from '@/store/viewerStore';
+import { useGraphStore } from '@/store/graphStore';
 
 /** Latest webcam frame + hand landmarks, updated outside React state so the
  *  hand preview panel can read it in its own rAF loop without causing
@@ -56,13 +56,16 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
   const gestureControllerRef = useRef(
     new MediaPipeGestureController({
       onStatusChange: (status, error) => {
-        useViewerStore.getState().setGestureStatus(status, error);
+        useGraphStore.getState().setGestureStatus(status, error);
       },
       onModeChange: (mode) => {
-        useViewerStore.getState().setGestureMode(mode);
+        useGraphStore.getState().setGestureMode(mode);
       },
       onHandCountChange: (count) => {
-        useViewerStore.getState().setGestureHands(count);
+        useGraphStore.getState().setGestureHands(count);
+      },
+      onPinchChange: (pinching) => {
+        useGraphStore.getState().setPointerPinching(pinching);
       },
       onHandFrame: (update) => {
         latestHandFrameRef.current = update;
@@ -75,18 +78,9 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
     const unregisterGesture = manager.registerSource(gestureControllerRef.current);
 
     const unsubscribe = manager.subscribe((action) => {
-      const store = useViewerStore.getState();
+      const store = useGraphStore.getState();
 
       switch (action.type) {
-        case 'NEXT':
-          store.next();
-          break;
-        case 'PREVIOUS':
-          store.previous();
-          break;
-        case 'SELECT':
-          store.select(action.index);
-          break;
         case 'ORBIT':
           store.orbitBy(action.dyaw, action.dpitch);
           break;
@@ -101,28 +95,23 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
           store.panBy(-action.dx * worldPerView, action.dy * worldPerView);
           break;
         }
+        case 'AIM':
+          store.setPointer(action.x, action.y, action.source);
+          store.showUI();
+          break;
+        case 'TAP': {
+          const hovered = store.hoveredId;
+          if (hovered) store.tapNode(hovered);
+          break;
+        }
         case 'FIT':
           store.resetCamera();
           break;
         case 'TOGGLE_UI':
           store.toggleUI();
           break;
-        case 'TOGGLE_SLIDESHOW':
-          store.toggleSlideshow();
-          break;
-        case 'START_SLIDESHOW':
-          store.startSlideshow();
-          break;
-        case 'STOP_SLIDESHOW':
-          store.stopSlideshow();
-          break;
         case 'EXIT':
-          store.stopSlideshow();
-          store.resetCamera();
-          break;
-        case 'CURSOR':
-          store.setCursorPosition(action.position);
-          store.showUI();
+          store.exit();
           break;
       }
     });

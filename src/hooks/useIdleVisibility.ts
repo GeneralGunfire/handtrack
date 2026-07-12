@@ -1,18 +1,18 @@
 import { useEffect, useRef } from 'react';
-import { useViewerStore } from '@/store/viewerStore';
+import { useGraphStore } from '@/store/graphStore';
 
 const IDLE_TIMEOUT_MS = 2500;
 
 /** Fades floating UI after inactivity; any pointer movement wakes it again. */
 export function useIdleVisibility(): void {
-  const showUI = useViewerStore((state) => state.showUI);
+  const showUI = useGraphStore((state) => state.showUI);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const scheduleHide = () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       timeoutRef.current = setTimeout(() => {
-        useViewerStore.setState({ uiVisible: false });
+        useGraphStore.setState({ uiVisible: false });
       }, IDLE_TIMEOUT_MS);
     };
 

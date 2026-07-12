@@ -1,17 +1,17 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { useViewerStore } from '@/store/viewerStore';
-import type { GestureMode } from '@/store/viewerStore';
+import { useGraphStore } from '@/store/graphStore';
+import type { GestureMode } from '@/store/graphStore';
 
 const MODE_LABEL: Record<GestureMode, string> = {
-  idle: 'Pinch to rotate · both hands pinch to zoom & pan · swipe to switch',
+  idle: 'Point to aim · quick pinch to select · pinch & drag to rotate',
   orbit: 'Rotating — move your pinched hand · release to stop',
   pan_zoom: 'Zoom & pan — stretch hands apart to zoom, move together to pan',
 };
 
 export function GestureModeIndicator() {
-  const gestureStatus = useViewerStore((state) => state.gestureStatus);
-  const handCount = useViewerStore((state) => state.gestureHands);
-  const mode = useViewerStore((state) => state.gestureMode);
+  const gestureStatus = useGraphStore((state) => state.gestureStatus);
+  const handCount = useGraphStore((state) => state.gestureHands);
+  const mode = useGraphStore((state) => state.gestureMode);
 
   const visible = gestureStatus === 'active' && handCount > 0;
 

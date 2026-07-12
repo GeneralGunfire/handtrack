@@ -19,6 +19,7 @@ interface MediaPipeGestureControllerOptions {
   onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
   onModeChange?: (mode: GestureMode) => void;
   onHandCountChange?: (count: number) => void;
+  onPinchChange?: (pinching: boolean) => void;
   /** Fired every processed frame with the raw video + landmarks, for the hand preview panel. */
   onHandFrame?: (update: HandFrameUpdate) => void;
 }
@@ -47,6 +48,7 @@ export class MediaPipeGestureController implements IGestureController {
     this.engine = new HandEngine({
       onModeChange: options.onModeChange,
       onHandCountChange: options.onHandCountChange,
+      onPinchChange: options.onPinchChange,
     });
   }
 

@@ -2,22 +2,23 @@ import type { Dispatch } from '@/types/action';
 import type { GestureMode, HandFeatures, Landmark, PinchPhase } from './gestureTypes';
 
 /*
- * Two-hand gesture engine.
+ * Two-hand gesture engine for the codebase graph.
  *
  * Pipeline per frame (landmarks are treated as a noisy sensor):
  *   raw landmarks -> mirror -> features -> identity tracking -> smoothing
  *   -> pinch state machine (hysteresis + confirm frames) -> mode selection
  *   -> relative deltas -> Actions.
  *
- * Gesture vocabulary (few, visually distinct gestures):
- *   - One hand pinched (thumb+index)  -> ORBIT: rotate around the object.
- *   - Both hands pinched              -> PAN + ZOOM: stretch/squeeze to zoom,
- *                                        move both hands together to pan.
- *   - Open palm swipe (fast, sideways)-> NEXT / PREVIOUS image.
- *   - Fist held ~0.6s                 -> reset the view (FIT).
+ * Gesture vocabulary (point = aim, pinch = commit, spread = scale):
+ *   - Point / move a hand         -> AIM: drives the targeting reticle.
+ *   - Quick pinch (tap)           -> TAP: select / expand whatever is aimed at.
+ *   - Pinch + drag                -> ORBIT: rotate around the graph.
+ *   - Both hands pinched          -> PAN + ZOOM: stretch to zoom, move together to pan.
+ *   - Fist held ~0.6s             -> FIT: reset the view.
  *
- * All motion is mapped as *relative change* with dead zones and clamped
- * per-frame speed, so jitter never moves the object and it can never jump.
+ * A pinch starts "undecided": if the hand travels beyond a small threshold it
+ * becomes a drag (orbit); if it releases quickly without moving it was a tap.
+ * That keeps selection and camera control on one gesture without conflicts.
  */
 
 // -- Tuning ------------------------------------------------------------------
@@ -38,6 +39,11 @@ const SMOOTH_SPEED_SCALE = 30;
 /** Ignore per-frame smoothed movement below this (normalized units). */
 const DEAD_ZONE = 0.0012;
 
+/** Pinch travel beyond this becomes a drag; release before it is a tap. */
+const TAP_MOVE_THRESHOLD = 0.022;
+/** A pinch longer than this can no longer count as a tap. */
+const TAP_MAX_MS = 500;
+
 /** Radians of yaw per full screen-width of hand travel. */
 const ORBIT_GAIN_X = 4.2;
 const ORBIT_GAIN_Y = 3.2;
@@ -48,13 +54,6 @@ const ZOOM_GAIN = 1.9;
 const MAX_ZOOM_STEP = 0.09;
 const PAN_GAIN = 1.35;
 const MAX_PAN_STEP = 0.06;
-
-/** Open-palm swipe: min horizontal velocity (normalized/sec) and travel. */
-const SWIPE_VELOCITY = 1.5;
-const SWIPE_TRAVEL = 0.11;
-const SWIPE_COOLDOWN_MS = 800;
-/** Ignore swipes right after a pinch releases (the release flick). */
-const POST_PINCH_GRACE_MS = 350;
 
 const FIST_HOLD_MS = 600;
 const FIST_COOLDOWN_MS = 1500;
@@ -107,7 +106,17 @@ export function extractFeatures(raw: Landmark[]): HandFeatures {
     }
   }
 
-  return { palm, pinchPoint, handSpan, pinchRatio: pinchDistance / handSpan, extendedFingers };
+  const indexExtended = dist2d(lm[8], wrist) > dist2d(lm[6], wrist) * 1.12;
+
+  return {
+    palm,
+    pinchPoint,
+    indexTip: { ...lm[8] },
+    indexExtended,
+    handSpan,
+    pinchRatio: pinchDistance / handSpan,
+    extendedFingers,
+  };
 }
 
 // -- Per-hand tracking ---------------------------------------------------------
@@ -115,14 +124,17 @@ export function extractFeatures(raw: Landmark[]): HandFeatures {
 interface TrackedHand {
   palm: Landmark;
   pinchPoint: Landmark;
+  /** Smoothed aiming point: index fingertip when pointing, else the pinch point. */
+  aimPoint: Landmark;
   features: HandFeatures;
   phase: PinchPhase;
   /** Frames the raw pinch reading has disagreed with the confirmed phase. */
   transitionFrames: number;
   lastSeenMs: number;
-  lastPinchChangeMs: number;
-  /** Recent palm positions for swipe velocity, newest last. */
-  trail: Array<{ x: number; t: number }>;
+  /** Pinch-tap bookkeeping. */
+  pinchStartMs: number;
+  pinchStart: Landmark | null;
+  dragging: boolean;
   fistSinceMs: number | null;
 }
 
@@ -144,6 +156,7 @@ function smooth(prev: Landmark, next: Landmark, dtSec: number): Landmark {
 export interface HandEngineCallbacks {
   onModeChange?: (mode: GestureMode) => void;
   onHandCountChange?: (count: number) => void;
+  onPinchChange?: (pinching: boolean) => void;
 }
 
 export class HandEngine {
@@ -152,12 +165,12 @@ export class HandEngine {
   private mode: GestureMode = 'idle';
   private lastFrameMs = 0;
   private reportedHandCount = -1;
+  private reportedPinching = false;
 
   /** Previous-frame anchors for relative mapping; null = re-prime next frame. */
   private orbitAnchor: Landmark | null = null;
   private zoomPanAnchor: { span: number; mid: Landmark } | null = null;
 
-  private lastSwipeMs = 0;
   private lastFistResetMs = 0;
 
   private callbacks: HandEngineCallbacks;
@@ -180,6 +193,7 @@ export class HandEngine {
     this.orbitAnchor = null;
     this.zoomPanAnchor = null;
     this.setMode('idle');
+    this.reportPinching(false);
     if (this.reportedHandCount !== 0) {
       this.reportedHandCount = 0;
       this.callbacks.onHandCountChange?.(0);
@@ -199,20 +213,28 @@ export class HandEngine {
     }
 
     const pinched = this.hands.filter((h) => h.phase === 'pinched');
+    this.reportPinching(pinched.length > 0);
+
+    // The aiming hand drives the reticle: prefer the pinched hand, else the first.
+    const aimHand = pinched[0] ?? this.hands[0];
+    if (aimHand) {
+      this.dispatch({ type: 'AIM', x: aimHand.aimPoint.x, y: aimHand.aimPoint.y, source: 'hand' });
+    }
 
     if (pinched.length >= 2) {
       this.setMode('pan_zoom');
       this.orbitAnchor = null;
+      // A second pinch joins in: neither pinch can be a tap anymore.
+      for (const hand of pinched) hand.dragging = true;
       this.runPanZoom(pinched[0], pinched[1]);
     } else if (pinched.length === 1) {
-      this.setMode('orbit');
       this.zoomPanAnchor = null;
-      this.runOrbit(pinched[0]);
+      this.runSinglePinch(pinched[0], nowMs);
     } else {
       this.setMode('idle');
       this.orbitAnchor = null;
       this.zoomPanAnchor = null;
-      this.runIdleGestures(nowMs, dtSec);
+      this.runIdleGestures(nowMs);
     }
   }
 
@@ -249,30 +271,29 @@ export class HandEngine {
       this.hands.push({
         palm: f.palm,
         pinchPoint: f.pinchPoint,
+        aimPoint: f.indexExtended ? f.indexTip : f.pinchPoint,
         features: f,
         phase: 'released',
         transitionFrames: 0,
         lastSeenMs: nowMs,
-        lastPinchChangeMs: 0,
-        trail: [{ x: f.palm.x, t: nowMs }],
+        pinchStartMs: 0,
+        pinchStart: null,
+        dragging: false,
         fistSinceMs: null,
       });
     }
 
-    // Drop stale hands.
+    // Drop stale hands. A pinch that vanishes mid-air is never a tap.
     this.hands = this.hands.filter((h) => nowMs - h.lastSeenMs < HAND_TIMEOUT_MS);
   }
 
   private updateHand(hand: TrackedHand, f: HandFeatures, nowMs: number, dtSec: number): void {
     hand.palm = smooth(hand.palm, f.palm, dtSec);
     hand.pinchPoint = smooth(hand.pinchPoint, f.pinchPoint, dtSec);
+    const rawAim = hand.phase === 'pinched' || !f.indexExtended ? f.pinchPoint : f.indexTip;
+    hand.aimPoint = smooth(hand.aimPoint, rawAim, dtSec);
     hand.features = f;
     hand.lastSeenMs = nowMs;
-
-    hand.trail.push({ x: hand.palm.x, t: nowMs });
-    while (hand.trail.length > 2 && nowMs - hand.trail[0].t > 180) {
-      hand.trail.shift();
-    }
 
     // Pinch state machine: the raw reading must disagree with the confirmed
     // state for CONFIRM_FRAMES consecutive frames before the state flips.
@@ -283,9 +304,16 @@ export class HandEngine {
     if ((isPinched && rawReleased) || (!isPinched && rawPinched)) {
       hand.transitionFrames += 1;
       if (hand.transitionFrames >= CONFIRM_FRAMES) {
-        hand.phase = isPinched ? 'released' : 'pinched';
         hand.transitionFrames = 0;
-        hand.lastPinchChangeMs = nowMs;
+        if (isPinched) {
+          hand.phase = 'released';
+          this.onPinchReleased(hand, nowMs);
+        } else {
+          hand.phase = 'pinched';
+          hand.pinchStartMs = nowMs;
+          hand.pinchStart = { ...hand.pinchPoint };
+          hand.dragging = false;
+        }
       }
     } else {
       hand.transitionFrames = 0;
@@ -300,9 +328,32 @@ export class HandEngine {
     }
   }
 
+  private onPinchReleased(hand: TrackedHand, nowMs: number): void {
+    const duration = nowMs - hand.pinchStartMs;
+    if (!hand.dragging && duration <= TAP_MAX_MS) {
+      this.dispatch?.({ type: 'TAP' });
+    }
+    hand.pinchStart = null;
+    hand.dragging = false;
+    this.orbitAnchor = null;
+  }
+
   // -- modes --
 
-  private runOrbit(hand: TrackedHand): void {
+  /** One pinched hand: undecided until it moves (drag/orbit) or releases (tap). */
+  private runSinglePinch(hand: TrackedHand, nowMs: number): void {
+    if (!hand.dragging) {
+      const travel = hand.pinchStart ? dist2d(hand.pinchPoint, hand.pinchStart) : 0;
+      const expired = nowMs - hand.pinchStartMs > TAP_MAX_MS;
+      if (travel < TAP_MOVE_THRESHOLD && !expired) {
+        this.setMode('idle');
+        return; // Still might be a tap — hold fire.
+      }
+      hand.dragging = true;
+      this.orbitAnchor = null;
+    }
+
+    this.setMode('orbit');
     const p = hand.pinchPoint;
     if (!this.orbitAnchor) {
       this.orbitAnchor = { ...p };
@@ -349,9 +400,8 @@ export class HandEngine {
     }
   }
 
-  private runIdleGestures(nowMs: number, _dtSec: number): void {
+  private runIdleGestures(nowMs: number): void {
     for (const hand of this.hands) {
-      // Fist held -> reset view.
       if (
         hand.fistSinceMs !== null &&
         nowMs - hand.fistSinceMs >= FIST_HOLD_MS &&
@@ -360,28 +410,6 @@ export class HandEngine {
         this.lastFistResetMs = nowMs;
         hand.fistSinceMs = null;
         this.dispatch?.({ type: 'FIT' });
-        continue;
-      }
-
-      // Open-palm horizontal swipe -> next / previous.
-      if (
-        hand.features.extendedFingers >= 4 &&
-        nowMs - this.lastSwipeMs >= SWIPE_COOLDOWN_MS &&
-        nowMs - hand.lastPinchChangeMs >= POST_PINCH_GRACE_MS &&
-        hand.trail.length >= 2
-      ) {
-        const first = hand.trail[0];
-        const last = hand.trail[hand.trail.length - 1];
-        const dt = (last.t - first.t) / 1000;
-        if (dt > 0.04) {
-          const travel = last.x - first.x;
-          const velocity = travel / dt;
-          if (Math.abs(velocity) >= SWIPE_VELOCITY && Math.abs(travel) >= SWIPE_TRAVEL) {
-            this.lastSwipeMs = nowMs;
-            hand.trail = [{ x: last.x, t: last.t }];
-            this.dispatch?.({ type: travel > 0 ? 'NEXT' : 'PREVIOUS' });
-          }
-        }
       }
     }
   }
@@ -390,6 +418,12 @@ export class HandEngine {
     if (this.mode === mode) return;
     this.mode = mode;
     this.callbacks.onModeChange?.(mode);
+  }
+
+  private reportPinching(pinching: boolean): void {
+    if (this.reportedPinching === pinching) return;
+    this.reportedPinching = pinching;
+    this.callbacks.onPinchChange?.(pinching);
   }
 }
 

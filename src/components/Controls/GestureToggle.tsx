@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { useViewerStore } from '@/store/viewerStore';
+import { useGraphStore } from '@/store/graphStore';
 import { useGestureControls } from '@/controllers/context';
 
 export function GestureToggle() {
-  const status = useViewerStore((state) => state.gestureStatus);
-  const error = useViewerStore((state) => state.gestureError);
+  const status = useGraphStore((state) => state.gestureStatus);
+  const error = useGraphStore((state) => state.gestureError);
   const { enable, disable } = useGestureControls();
   const [showError, setShowError] = useState(false);
 
