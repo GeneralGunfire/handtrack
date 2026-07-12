@@ -7,9 +7,14 @@ const LANGUAGE_COLORS: Record<string, string> = {
   ts: '#3b82f6',
   tsx: '#22d3ee',
   js: '#eab308',
+  mjs: '#eab308',
   css: '#a855f7',
   json: '#f59e0b',
   md: '#94a3b8',
+  csv: '#4ade80',
+  yml: '#f97316',
+  yaml: '#f97316',
+  svg: '#ec4899',
 };
 const FILE_FALLBACK = '#64748b';
 
@@ -131,7 +136,9 @@ export function createNodeVisual(positioned: PositionedNode, nowMs: number): Nod
   glow.scale.setScalar(isFolder ? 1.1 : 0.7);
   group.add(glow);
 
-  const label = makeLabelSprite(positioned.node.name, isFolder ? ACCENT : '#c8d2e0', isFolder);
+  const childCount = positioned.node.children?.length ?? 0;
+  const labelText = isFolder ? `${positioned.node.name} · ${childCount}` : positioned.node.name;
+  const label = makeLabelSprite(labelText, isFolder ? ACCENT : '#c8d2e0', isFolder);
   label.position.y = isFolder ? -0.42 : -0.3;
   group.add(label);
 

@@ -54,9 +54,25 @@ const ZOOM_GAIN = 1.9;
 const MAX_ZOOM_STEP = 0.09;
 const PAN_GAIN = 1.35;
 const MAX_PAN_STEP = 0.06;
+/** Separate dead zones for the two-hand mode: zoom is a span *ratio*, pan a
+ *  midpoint *offset* — each needs its own noise floor or they bleed into
+ *  each other and the graph drifts while you zoom (and vice versa). */
+const ZOOM_DEAD_ZONE = 0.006;
+const PAN_DEAD_ZONE = 0.0035;
+/** When one intent clearly dominates (spread vs. move), mute the other. */
+const DOMINANCE_RATIO = 1.7;
 
 const FIST_HOLD_MS = 600;
 const FIST_COOLDOWN_MS = 1500;
+
+/** Finger-count bookmarks: hold N fingers up, hand still, to jump to a
+ *  bookmarked node. Long hold + stillness so a casually open aiming hand
+ *  doesn't trigger jumps. */
+const BOOKMARK_SLOTS = [2, 3, 4];
+const BOOKMARK_HOLD_MS = 1000;
+const BOOKMARK_COOLDOWN_MS = 2000;
+/** Palm must be moving slower than this (normalized units/sec) to count. */
+const BOOKMARK_MAX_SPEED = 0.25;
 
 /** A tracked hand is dropped if unseen for this long. */
 const HAND_TIMEOUT_MS = 160;
@@ -136,6 +152,11 @@ interface TrackedHand {
   pinchStart: Landmark | null;
   dragging: boolean;
   fistSinceMs: number | null;
+  /** Smoothed palm speed (normalized units/sec) — stillness gate for holds. */
+  palmSpeed: number;
+  /** Finger-count hold tracking for bookmark gestures. */
+  fingerHoldCount: number;
+  fingerHoldSinceMs: number;
 }
 
 function smooth(prev: Landmark, next: Landmark, dtSec: number): Landmark {
@@ -172,6 +193,7 @@ export class HandEngine {
   private zoomPanAnchor: { span: number; mid: Landmark } | null = null;
 
   private lastFistResetMs = 0;
+  private lastBookmarkMs = 0;
 
   private callbacks: HandEngineCallbacks;
 
@@ -280,6 +302,9 @@ export class HandEngine {
         pinchStart: null,
         dragging: false,
         fistSinceMs: null,
+        palmSpeed: 0,
+        fingerHoldCount: -1,
+        fingerHoldSinceMs: 0,
       });
     }
 
@@ -288,7 +313,10 @@ export class HandEngine {
   }
 
   private updateHand(hand: TrackedHand, f: HandFeatures, nowMs: number, dtSec: number): void {
+    const prevPalm = { ...hand.palm };
     hand.palm = smooth(hand.palm, f.palm, dtSec);
+    const instantSpeed = dist2d(prevPalm, hand.palm) / Math.max(dtSec, 1 / 120);
+    hand.palmSpeed += (instantSpeed - hand.palmSpeed) * 0.3;
     hand.pinchPoint = smooth(hand.pinchPoint, f.pinchPoint, dtSec);
     const rawAim = hand.phase === 'pinched' || !f.indexExtended ? f.pinchPoint : f.indexTip;
     hand.aimPoint = smooth(hand.aimPoint, rawAim, dtSec);
@@ -388,10 +416,19 @@ export class HandEngine {
     const dy = mid.y - this.zoomPanAnchor.mid.y;
     this.zoomPanAnchor = { span, mid };
 
-    if (Math.abs(zoomDelta) > DEAD_ZONE) {
+    // Dominance gating: spreading your hands always jiggles the midpoint a
+    // little, and moving both hands always jiggles the span. Compare the two
+    // intents and mute the weaker one when the other clearly dominates, so
+    // zooming doesn't drift the graph and panning doesn't creep the zoom.
+    const zoomStrength = Math.abs(zoomDelta) / ZOOM_DEAD_ZONE;
+    const panStrength = Math.hypot(dx, dy) / PAN_DEAD_ZONE;
+    const zoomAllowed = zoomStrength > 1 && zoomStrength * DOMINANCE_RATIO >= panStrength;
+    const panAllowed = panStrength > 1 && panStrength * DOMINANCE_RATIO >= zoomStrength;
+
+    if (zoomAllowed) {
       this.dispatch?.({ type: 'ZOOM', delta: clampStep(zoomDelta * ZOOM_GAIN, MAX_ZOOM_STEP) });
     }
-    if (Math.abs(dx) > DEAD_ZONE || Math.abs(dy) > DEAD_ZONE) {
+    if (panAllowed) {
       this.dispatch?.({
         type: 'PAN',
         dx: clampStep(dx * PAN_GAIN, MAX_PAN_STEP),
@@ -402,6 +439,7 @@ export class HandEngine {
 
   private runIdleGestures(nowMs: number): void {
     for (const hand of this.hands) {
+      // Fist held -> reset view.
       if (
         hand.fistSinceMs !== null &&
         nowMs - hand.fistSinceMs >= FIST_HOLD_MS &&
@@ -410,7 +448,39 @@ export class HandEngine {
         this.lastFistResetMs = nowMs;
         hand.fistSinceMs = null;
         this.dispatch?.({ type: 'FIT' });
+        continue;
       }
+
+      this.trackBookmarkHold(hand, nowMs);
+    }
+  }
+
+  /** N fingers held up on a still hand for a beat -> jump to bookmark N. */
+  private trackBookmarkHold(hand: TrackedHand, nowMs: number): void {
+    const count = hand.features.extendedFingers;
+    const eligible =
+      BOOKMARK_SLOTS.includes(count) &&
+      hand.phase !== 'pinched' &&
+      hand.palmSpeed < BOOKMARK_MAX_SPEED;
+
+    if (!eligible) {
+      hand.fingerHoldCount = -1;
+      return;
+    }
+
+    if (hand.fingerHoldCount !== count) {
+      hand.fingerHoldCount = count;
+      hand.fingerHoldSinceMs = nowMs;
+      return;
+    }
+
+    if (
+      nowMs - hand.fingerHoldSinceMs >= BOOKMARK_HOLD_MS &&
+      nowMs - this.lastBookmarkMs >= BOOKMARK_COOLDOWN_MS
+    ) {
+      this.lastBookmarkMs = nowMs;
+      hand.fingerHoldCount = -1;
+      this.dispatch?.({ type: 'BOOKMARK', slot: count });
     }
   }
 

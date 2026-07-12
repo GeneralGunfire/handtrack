@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { clamp } from '@/utils/clamp';
 import { computeLayout } from '@/graph/layout';
 import { findPath } from '@/graph/nodeUtils';
-import { SAMPLE_TREE } from '@/graph/sampleTree';
+import { MERIDIAN_TREE } from '@/graph/meridianTree';
 import type { GraphLayout, TreeNode } from '@/graph/types';
 
 export type GestureMode = 'idle' | 'orbit' | 'pan_zoom';
@@ -22,20 +22,27 @@ export const CAMERA_LIMITS = {
   minPitch: -1.35,
   maxPitch: 1.35,
   minDistance: 1.6,
-  maxDistance: 18,
-  maxPan: 9,
+  maxDistance: 30,
+  maxPan: 14,
 };
 
 export const DEFAULT_CAMERA: CameraState = {
   yaw: 0,
   pitch: 0.35,
-  distance: 9.5,
+  distance: 13,
   targetX: 0,
   targetY: 0,
-  targetZ: -0.6,
+  targetZ: -0.8,
 };
 
-const INITIAL_EXPANDED = new Set(['root', 'src']);
+/** Finger-count gesture shortcuts: hold N fingers up to fly to these nodes. */
+export const BOOKMARKS: Record<number, { id: string; label: string }> = {
+  2: { id: 'frontend/src/app/page.tsx', label: 'Homepage' },
+  3: { id: 'pipeline/src/scrape-all.ts', label: 'Scraper entry' },
+  4: { id: 'pipeline/src/registry.ts', label: 'Dataset registry' },
+};
+
+const INITIAL_EXPANDED = new Set(['root', 'frontend', 'pipeline']);
 
 interface GraphState {
   tree: TreeNode;
@@ -107,9 +114,9 @@ function collectMatches(root: TreeNode, query: string): Set<string> {
 }
 
 export const useGraphStore = create<GraphState>((set, get) => ({
-  tree: SAMPLE_TREE,
+  tree: MERIDIAN_TREE,
   expandedIds: INITIAL_EXPANDED,
-  layout: computeLayout(SAMPLE_TREE, INITIAL_EXPANDED),
+  layout: computeLayout(MERIDIAN_TREE, INITIAL_EXPANDED),
 
   hoveredId: null,
   selectedId: null,

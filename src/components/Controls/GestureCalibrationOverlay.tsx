@@ -26,6 +26,9 @@ export function GestureCalibrationOverlay() {
                 Point to aim · quick pinch to select · pinch &amp; drag to rotate · both hands
                 pinch to zoom &amp; pan · hold a fist to reset
               </p>
+              <p className="mt-1 text-xs text-ink-2">
+                Hold fingers up to jump: 2 → homepage · 3 → scraper entry · 4 → dataset registry
+              </p>
             </div>
           </div>
         </motion.div>

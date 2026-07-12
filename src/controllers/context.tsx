@@ -4,7 +4,7 @@ import { InputManager } from './InputManager';
 import { MouseKeyboardSource } from './sources/MouseKeyboardSource';
 import { MediaPipeGestureController } from './sources/MediaPipeGestureController';
 import type { HandFrameUpdate } from './sources/MediaPipeGestureController';
-import { useGraphStore } from '@/store/graphStore';
+import { BOOKMARKS, useGraphStore } from '@/store/graphStore';
 
 /** Latest webcam frame + hand landmarks, updated outside React state so the
  *  hand preview panel can read it in its own rAF loop without causing
@@ -107,6 +107,11 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
         case 'FIT':
           store.resetCamera();
           break;
+        case 'BOOKMARK': {
+          const bookmark = BOOKMARKS[action.slot];
+          if (bookmark) store.revealNode(bookmark.id);
+          break;
+        }
         case 'TOGGLE_UI':
           store.toggleUI();
           break;

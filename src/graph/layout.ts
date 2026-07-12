@@ -1,17 +1,20 @@
 import type { GraphEdge, GraphLayout, PositionedNode, TreeNode } from './types';
 
-/** Radius of the first ring, and extra radius per depth level. */
-const RING_BASE = 2.1;
-const RING_STEP = 1.75;
+/** Radius of the first ring, and minimum extra radius per depth level. */
+const RING_BASE = 2.3;
+const RING_STEP = 1.9;
+/** Minimum arc distance between sibling nodes so labels never overlap. */
+const MIN_SIBLING_SPACING = 0.85;
 /** Depth pushes nodes slightly back so the tree reads as a shallow 3D cone. */
-const DEPTH_Z = -0.55;
+const DEPTH_Z = -0.5;
 
 /**
  * Radial wedge layout: the root sits at the origin and each expanded folder's
- * children fan out inside their parent's angular wedge on progressively larger
- * rings. Wedge widths are proportional to visible subtree size so dense
- * folders get more room. Deterministic per-node jitter breaks up the rings so
- * the result reads as a constellation rather than a diagram.
+ * children fan out inside their parent's angular wedge. Wedge widths are
+ * proportional to visible subtree size so dense folders get more room, and
+ * each ring's radius grows as needed so siblings always keep a minimum arc
+ * spacing — a 20-file folder pushes its ring outward instead of clumping.
+ * Deterministic per-node jitter keeps it reading as a constellation.
  */
 export function computeLayout(root: TreeNode, expandedIds: ReadonlySet<string>): GraphLayout {
   const nodes: PositionedNode[] = [];
@@ -32,11 +35,11 @@ export function computeLayout(root: TreeNode, expandedIds: ReadonlySet<string>):
     parentId: string | null,
     angleStart: number,
     angleEnd: number,
+    radius: number,
   ): void => {
     const midAngle = (angleStart + angleEnd) / 2;
-    const radius = depth === 0 ? 0 : RING_BASE + (depth - 1) * RING_STEP;
     const jitter = hash01(node.id);
-    const r = radius * (1 + (jitter - 0.5) * 0.14);
+    const r = radius * (1 + (jitter - 0.5) * 0.08);
     const expanded = node.kind === 'folder' && expandedIds.has(node.id);
 
     const positioned: PositionedNode = {
@@ -47,7 +50,7 @@ export function computeLayout(root: TreeNode, expandedIds: ReadonlySet<string>):
       position: [
         Math.cos(midAngle) * r,
         Math.sin(midAngle) * r,
-        depth * DEPTH_Z + (jitter - 0.5) * 0.5,
+        depth * DEPTH_Z + (jitter - 0.5) * 0.4,
       ],
     };
     nodes.push(positioned);
@@ -59,18 +62,36 @@ export function computeLayout(root: TreeNode, expandedIds: ReadonlySet<string>):
     if (!expanded || !node.children?.length) return;
 
     const total = node.children.reduce((sum, child) => sum + weight(child), 0);
-    // The root spreads over the full circle; nested folders stay inside a
-    // slightly widened copy of their own wedge so subtrees don't collide.
-    const span = depth === 0 ? Math.PI * 2 : Math.min((angleEnd - angleStart) * 1.35, Math.PI * 1.5);
+    // The root spreads over the full circle. Nested folders start from a
+    // slightly widened copy of their own wedge, but a folder with many
+    // children may claim a wider fan — angular overlap with siblings is fine
+    // because their rings sit at different radii.
+    const naturalSpan = Math.min((angleEnd - angleStart) * 1.4, Math.PI * 1.6);
+    const span =
+      depth === 0
+        ? Math.PI * 2
+        : Math.min(Math.max(naturalSpan, node.children.length * 0.3), Math.PI * 1.7);
+
+    // Push the children's ring outward until every sibling has room. The
+    // narrowest wedge goes to weight-1 leaves, so size the radius for them —
+    // capped so a huge folder crowds slightly instead of flying off-screen.
+    const leafWedge = (1 / total) * span;
+    const requiredRadius = MIN_SIBLING_SPACING / Math.max(leafWedge, 1e-3);
+    const childRadius = Math.max(
+      radius + RING_STEP,
+      depth === 0 ? RING_BASE : 0,
+      Math.min(requiredRadius, radius + RING_STEP * 3),
+    );
+
     let cursor = midAngle - span / 2;
     for (const child of node.children) {
       const childSpan = (weight(child) / total) * span;
-      place(child, depth + 1, node.id, cursor, cursor + childSpan);
+      place(child, depth + 1, node.id, cursor, cursor + childSpan, childRadius);
       cursor += childSpan;
     }
   };
 
-  place(root, 0, null, 0, Math.PI * 2);
+  place(root, 0, null, 0, Math.PI * 2, 0);
   return { nodes, edges, byId };
 }
 

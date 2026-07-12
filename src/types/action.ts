@@ -18,6 +18,8 @@ export type Action =
   | { type: 'TAP' }
   /** Reset the camera to the framed default view. */
   | { type: 'FIT' }
+  /** Jump to a bookmarked node (held finger-count gesture; slot = finger count). */
+  | { type: 'BOOKMARK'; slot: number }
   | { type: 'TOGGLE_UI' }
   /** Close preview / clear selection / reset. */
   | { type: 'EXIT' };
