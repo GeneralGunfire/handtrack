@@ -1,23 +1,42 @@
 import { create } from 'zustand';
 import type { ImageItem, TransitionType } from '@/types/image';
 import type { Point } from '@/types/action';
+import { clamp } from '@/utils/clamp';
 
-export type ViewMode = 'fit' | 'actual' | 'custom';
 export type NavDirection = 'forward' | 'backward';
+export type GestureMode = 'idle' | 'orbit' | 'pan_zoom';
 
-interface ZoomPanState {
-  scale: number;
-  x: number;
-  y: number;
+/** Spherical orbit camera: yaw/pitch around a pannable target at a given distance. */
+export interface CameraState {
+  yaw: number;
+  pitch: number;
+  distance: number;
+  targetX: number;
+  targetY: number;
 }
+
+export const CAMERA_LIMITS = {
+  minPitch: -1.35,
+  maxPitch: 1.35,
+  minDistance: 1.1,
+  maxDistance: 9,
+  maxPan: 2.5,
+};
+
+export const DEFAULT_CAMERA: CameraState = {
+  yaw: 0,
+  pitch: 0.12,
+  distance: 3.4,
+  targetX: 0,
+  targetY: 0,
+};
 
 interface ViewerState {
   images: ImageItem[];
   currentIndex: number;
   navDirection: NavDirection;
 
-  zoomPan: ZoomPanState;
-  viewMode: ViewMode;
+  camera: CameraState;
 
   uiVisible: boolean;
   metadataVisible: boolean;
@@ -30,9 +49,9 @@ interface ViewerState {
 
   gestureStatus: 'idle' | 'loading' | 'active' | 'error';
   gestureError: string | null;
-  gestureLockState: 'searching' | 'locking' | 'locked' | 'lost';
-  gestureLockProgress: number;
-  gestureMode: 'neutral' | 'pan_zoom';
+  /** Number of hands currently detected by the tracker. */
+  gestureHands: number;
+  gestureMode: GestureMode;
 
   addImages: (images: ImageItem[]) => void;
   removeImage: (id: string) => void;
@@ -42,10 +61,10 @@ interface ViewerState {
   previous: () => void;
   select: (index: number) => void;
 
-  setZoomPan: (partial: Partial<ZoomPanState>) => void;
-  resetZoomPan: () => void;
-  fitToScreen: () => void;
-  actualSize: () => void;
+  orbitBy: (dyaw: number, dpitch: number) => void;
+  dollyBy: (delta: number) => void;
+  panBy: (dx: number, dy: number) => void;
+  resetCamera: () => void;
 
   toggleUI: () => void;
   showUI: () => void;
@@ -57,19 +76,16 @@ interface ViewerState {
   setCursorPosition: (position: Point) => void;
 
   setGestureStatus: (status: 'idle' | 'loading' | 'active' | 'error', error?: string) => void;
-  setGestureLock: (state: 'searching' | 'locking' | 'locked' | 'lost', progress: number) => void;
-  setGestureMode: (mode: 'neutral' | 'pan_zoom') => void;
+  setGestureHands: (count: number) => void;
+  setGestureMode: (mode: GestureMode) => void;
 }
-
-const DEFAULT_ZOOM_PAN: ZoomPanState = { scale: 1, x: 0, y: 0 };
 
 export const useViewerStore = create<ViewerState>((set) => ({
   images: [],
   currentIndex: 0,
   navDirection: 'forward',
 
-  zoomPan: DEFAULT_ZOOM_PAN,
-  viewMode: 'fit',
+  camera: DEFAULT_CAMERA,
 
   uiVisible: true,
   metadataVisible: false,
@@ -82,9 +98,8 @@ export const useViewerStore = create<ViewerState>((set) => ({
 
   gestureStatus: 'idle',
   gestureError: null,
-  gestureLockState: 'searching',
-  gestureLockProgress: 0,
-  gestureMode: 'neutral',
+  gestureHands: 0,
+  gestureMode: 'idle',
 
   addImages: (images) =>
     set((state) => ({
@@ -132,9 +147,8 @@ export const useViewerStore = create<ViewerState>((set) => ({
       if (state.images.length === 0) return state;
       return {
         currentIndex: (state.currentIndex + 1) % state.images.length,
-        navDirection: 'forward',
-        zoomPan: DEFAULT_ZOOM_PAN,
-        viewMode: 'fit',
+        navDirection: 'forward' as const,
+        camera: DEFAULT_CAMERA,
       };
     }),
 
@@ -143,9 +157,8 @@ export const useViewerStore = create<ViewerState>((set) => ({
       if (state.images.length === 0) return state;
       return {
         currentIndex: (state.currentIndex - 1 + state.images.length) % state.images.length,
-        navDirection: 'backward',
-        zoomPan: DEFAULT_ZOOM_PAN,
-        viewMode: 'fit',
+        navDirection: 'backward' as const,
+        camera: DEFAULT_CAMERA,
       };
     }),
 
@@ -154,23 +167,42 @@ export const useViewerStore = create<ViewerState>((set) => ({
       if (index < 0 || index >= state.images.length) return state;
       return {
         currentIndex: index,
-        navDirection: index >= state.currentIndex ? 'forward' : 'backward',
-        zoomPan: DEFAULT_ZOOM_PAN,
-        viewMode: 'fit',
+        navDirection: index >= state.currentIndex ? ('forward' as const) : ('backward' as const),
+        camera: DEFAULT_CAMERA,
       };
     }),
 
-  setZoomPan: (partial) =>
+  orbitBy: (dyaw, dpitch) =>
     set((state) => ({
-      zoomPan: { ...state.zoomPan, ...partial },
-      viewMode: 'custom',
+      camera: {
+        ...state.camera,
+        yaw: state.camera.yaw + dyaw,
+        pitch: clamp(state.camera.pitch + dpitch, CAMERA_LIMITS.minPitch, CAMERA_LIMITS.maxPitch),
+      },
     })),
 
-  resetZoomPan: () => set({ zoomPan: DEFAULT_ZOOM_PAN, viewMode: 'fit' }),
+  dollyBy: (delta) =>
+    set((state) => ({
+      camera: {
+        ...state.camera,
+        distance: clamp(
+          state.camera.distance / (1 + delta),
+          CAMERA_LIMITS.minDistance,
+          CAMERA_LIMITS.maxDistance,
+        ),
+      },
+    })),
 
-  fitToScreen: () => set({ zoomPan: DEFAULT_ZOOM_PAN, viewMode: 'fit' }),
+  panBy: (dx, dy) =>
+    set((state) => ({
+      camera: {
+        ...state.camera,
+        targetX: clamp(state.camera.targetX + dx, -CAMERA_LIMITS.maxPan, CAMERA_LIMITS.maxPan),
+        targetY: clamp(state.camera.targetY + dy, -CAMERA_LIMITS.maxPan, CAMERA_LIMITS.maxPan),
+      },
+    })),
 
-  actualSize: () => set({ viewMode: 'actual' }),
+  resetCamera: () => set({ camera: DEFAULT_CAMERA }),
 
   toggleUI: () => set((state) => ({ uiVisible: !state.uiVisible })),
 
@@ -187,8 +219,7 @@ export const useViewerStore = create<ViewerState>((set) => ({
   setGestureStatus: (status, error) =>
     set({ gestureStatus: status, gestureError: error ?? null }),
 
-  setGestureLock: (state, progress) =>
-    set({ gestureLockState: state, gestureLockProgress: progress }),
+  setGestureHands: (count) => set({ gestureHands: count }),
 
   setGestureMode: (mode) => set({ gestureMode: mode }),
 }));

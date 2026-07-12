@@ -7,11 +7,14 @@ export type Action =
   | { type: 'NEXT' }
   | { type: 'PREVIOUS' }
   | { type: 'SELECT'; index: number }
+  /** Rotate the camera around the object. Deltas are in radians. */
+  | { type: 'ORBIT'; dyaw: number; dpitch: number }
+  /** Dolly toward/away from the object. Positive delta zooms in; applied multiplicatively. */
   | { type: 'ZOOM'; delta: number; origin?: Point }
-  | { type: 'TOGGLE_ZOOM'; origin?: Point }
+  /** Slide the camera target parallel to the view plane, in world units. */
   | { type: 'PAN'; dx: number; dy: number }
+  /** Reset the camera to its framed default view. */
   | { type: 'FIT' }
-  | { type: 'ACTUAL_SIZE' }
   | { type: 'TOGGLE_UI' }
   | { type: 'TOGGLE_SLIDESHOW' }
   | { type: 'START_SLIDESHOW' }
@@ -27,11 +30,6 @@ export interface InputSource {
   detach(): void;
 }
 
-/**
- * Future home of MediaPipe hand-tracking. Implementations translate
- * recognized gestures into Actions via the same InputSource contract,
- * so the Viewer and InputManager require no changes when this goes live.
- */
 export interface GestureController extends InputSource {
   readonly isTracking: boolean;
 }

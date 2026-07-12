@@ -1,17 +1,19 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useViewerStore } from '@/store/viewerStore';
+import type { GestureMode } from '@/store/viewerStore';
 
-const MODE_LABEL: Record<'neutral' | 'pan_zoom', string> = {
-  neutral: 'Flick hand to swipe, hold still to pan/zoom — other hand palm to stop',
-  pan_zoom: 'Pan & zoom — move hand to pan, pinch to zoom, hold still to exit',
+const MODE_LABEL: Record<GestureMode, string> = {
+  idle: 'Pinch to rotate · both hands pinch to zoom & pan · swipe to switch',
+  orbit: 'Rotating — move your pinched hand · release to stop',
+  pan_zoom: 'Zoom & pan — stretch hands apart to zoom, move together to pan',
 };
 
 export function GestureModeIndicator() {
   const gestureStatus = useViewerStore((state) => state.gestureStatus);
-  const lockState = useViewerStore((state) => state.gestureLockState);
+  const handCount = useViewerStore((state) => state.gestureHands);
   const mode = useViewerStore((state) => state.gestureMode);
 
-  const visible = gestureStatus === 'active' && lockState === 'locked';
+  const visible = gestureStatus === 'active' && handCount > 0;
 
   return (
     <AnimatePresence>
@@ -25,7 +27,7 @@ export function GestureModeIndicator() {
           <p className="flex items-center gap-2 text-xs font-medium text-ink-0">
             <span
               className={`h-1.5 w-1.5 rounded-full ${
-                mode === 'neutral' ? 'bg-ink-1' : 'bg-accent'
+                mode === 'idle' ? 'bg-ink-1' : 'bg-accent'
               }`}
             />
             {MODE_LABEL[mode]}

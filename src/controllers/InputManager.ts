@@ -74,8 +74,8 @@ export class InputManager {
     this.dispatch({ type: 'FIT' });
   }
 
-  actualSize(): void {
-    this.dispatch({ type: 'ACTUAL_SIZE' });
+  orbit(dyaw: number, dpitch: number): void {
+    this.dispatch({ type: 'ORBIT', dyaw, dpitch });
   }
 
   toggleUI(): void {

@@ -5,11 +5,9 @@ import { MouseKeyboardSource } from './sources/MouseKeyboardSource';
 import { MediaPipeGestureController } from './sources/MediaPipeGestureController';
 import type { HandFrameUpdate } from './sources/MediaPipeGestureController';
 import { useViewerStore } from '@/store/viewerStore';
-import { computeActualScale, MAX_SCALE, MIN_SCALE } from '@/utils/geometry';
-import { clamp } from '@/utils/clamp';
 
 /** Latest webcam frame + hand landmarks, updated outside React state so the
- *  debug skeleton overlay can read it in its own rAF loop without causing
+ *  hand preview panel can read it in its own rAF loop without causing
  *  a re-render on every camera frame. */
 export const latestHandFrameRef: { current: HandFrameUpdate | null } = { current: null };
 
@@ -48,12 +46,6 @@ export function useGestureControls(): { enable: () => Promise<void>; disable: ()
   return { enable: ctx.enableGestures, disable: ctx.disableGestures };
 }
 
-/** Ref set by the Viewer stage so zoom math knows the rendered image size. */
-export const stageMetricsRef = {
-  containerSize: { width: 0, height: 0 },
-  contentSize: { width: 0, height: 0 },
-};
-
 interface InputManagerProviderProps {
   children: ReactNode;
 }
@@ -66,11 +58,11 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
       onStatusChange: (status, error) => {
         useViewerStore.getState().setGestureStatus(status, error);
       },
-      onLockStateChange: (state, progress) => {
-        useViewerStore.getState().setGestureLock(state, progress);
-      },
       onModeChange: (mode) => {
         useViewerStore.getState().setGestureMode(mode);
+      },
+      onHandCountChange: (count) => {
+        useViewerStore.getState().setGestureHands(count);
       },
       onHandFrame: (update) => {
         latestHandFrameRef.current = update;
@@ -95,42 +87,23 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
         case 'SELECT':
           store.select(action.index);
           break;
-        case 'ZOOM': {
-          const nextScale = clamp(
-            store.zoomPan.scale * (1 + action.delta),
-            MIN_SCALE,
-            MAX_SCALE,
-          );
-          store.setZoomPan({ scale: nextScale });
+        case 'ORBIT':
+          store.orbitBy(action.dyaw, action.dpitch);
+          break;
+        case 'ZOOM':
+          store.dollyBy(action.delta);
+          break;
+        case 'PAN': {
+          // PAN deltas arrive as fractions of the view; scale by camera
+          // distance so a hand/mouse movement covers the same screen-space
+          // amount regardless of zoom level.
+          const worldPerView = store.camera.distance * 0.9;
+          store.panBy(-action.dx * worldPerView, action.dy * worldPerView);
           break;
         }
-        case 'TOGGLE_ZOOM': {
-          const { contentSize, containerSize } = stageMetricsRef;
-          const actualScale = computeActualScale(contentSize, containerSize);
-          const isZoomedIn = store.viewMode === 'actual' || store.zoomPan.scale > 1.01;
-          if (isZoomedIn) {
-            store.fitToScreen();
-          } else {
-            store.setZoomPan({ scale: actualScale });
-            store.actualSize();
-          }
-          break;
-        }
-        case 'PAN':
-          store.setZoomPan({
-            x: store.zoomPan.x + action.dx,
-            y: store.zoomPan.y + action.dy,
-          });
-          break;
         case 'FIT':
-          store.fitToScreen();
+          store.resetCamera();
           break;
-        case 'ACTUAL_SIZE': {
-          const scale = computeActualScale(stageMetricsRef.contentSize, stageMetricsRef.containerSize);
-          store.setZoomPan({ scale, x: 0, y: 0 });
-          store.actualSize();
-          break;
-        }
         case 'TOGGLE_UI':
           store.toggleUI();
           break;
@@ -145,7 +118,7 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
           break;
         case 'EXIT':
           store.stopSlideshow();
-          store.fitToScreen();
+          store.resetCamera();
           break;
         case 'CURSOR':
           store.setCursorPosition(action.position);

@@ -45,7 +45,7 @@ export function FloatingControls() {
         </svg>
       </IconButton>
 
-      <IconButton label="Fit to screen" onClick={() => manager.fitToScreen()}>
+      <IconButton label="Reset view" onClick={() => manager.fitToScreen()}>
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
           <path
             d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4"
@@ -54,13 +54,6 @@ export function FloatingControls() {
             strokeLinecap="round"
             strokeLinejoin="round"
           />
-        </svg>
-      </IconButton>
-
-      <IconButton label="Actual size" onClick={() => manager.actualSize()}>
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
-          <rect x="5" y="5" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" />
-          <text x="12" y="15" textAnchor="middle" fontSize="9" fill="currentColor">1:1</text>
         </svg>
       </IconButton>
 

@@ -5,7 +5,7 @@ import { useObjectURLs } from '@/hooks/useObjectURLs';
 import { useIdleVisibility } from '@/hooks/useIdleVisibility';
 import { useSlideshow } from '@/hooks/useSlideshow';
 import { Dropzone } from '@/components/Dropzone/Dropzone';
-import { ImageStage } from '@/components/Viewer/ImageStage';
+import { ObjectStage } from '@/components/Viewer/ObjectStage';
 import { ThumbnailStrip } from '@/components/Thumbnails/ThumbnailStrip';
 import { FloatingControls } from '@/components/Controls/FloatingControls';
 import { ImageCounter } from '@/components/Controls/ImageCounter';
@@ -26,7 +26,7 @@ function ViewerContent() {
     <Dropzone>
       <div className="relative flex h-full w-full flex-col">
         <div className="min-h-0 flex-1">
-          <ImageStage />
+          <ObjectStage />
         </div>
 
         <AnimatePresence>

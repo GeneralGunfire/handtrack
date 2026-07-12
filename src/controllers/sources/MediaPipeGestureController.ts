@@ -1,10 +1,7 @@
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 import type { Dispatch, GestureController as IGestureController } from '@/types/action';
-import { classifyPose } from '../gestures/classifyPose';
-import { GestureInterpreter } from '../gestures/GestureInterpreter';
-import { HandLockTracker } from '../gestures/HandLockTracker';
-import { selectHands } from '../gestures/selectPrimaryGesture';
-import type { GestureMode, Landmark, LockState } from '../gestures/gestureTypes';
+import { HandEngine } from '../gestures/handEngine';
+import type { GestureMode, Landmark } from '../gestures/gestureTypes';
 
 export interface HandFrameUpdate {
   video: HTMLVideoElement;
@@ -16,28 +13,22 @@ const WASM_BASE_URL =
 const MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
-/** The second hand must hold an open palm this long to trigger a full stop. */
-const STOP_HOLD_MS = 400;
-
 export type GestureControllerStatus = 'idle' | 'loading' | 'active' | 'error';
 
 interface MediaPipeGestureControllerOptions {
   onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
-  onLockStateChange?: (state: LockState, progress: number) => void;
   onModeChange?: (mode: GestureMode) => void;
-  /** Fired every processed frame with the raw video + landmarks, for a debug skeleton overlay. */
+  onHandCountChange?: (count: number) => void;
+  /** Fired every processed frame with the raw video + landmarks, for the hand preview panel. */
   onHandFrame?: (update: HandFrameUpdate) => void;
 }
 
 /**
- * Real hand-tracking implementation of GestureController. Reads webcam
- * frames, runs MediaPipe's HandLandmarker, selects a primary hand to drive
- * swipe/pan/zoom (motion-based, gated through HandLockTracker for
- * calibration + smoothing + lost detection) and a secondary hand watched
- * for the "stop" gesture (holding an open palm forces a full reset back
- * to calibration). Feeds locked frames through GestureInterpreter to
- * produce Actions — the same Action union MouseKeyboardSource produces.
- * InputManager and the Viewer are unaware this exists versus the NoOp stub.
+ * Camera + landmark layer of the gesture stack. Owns the webcam stream and
+ * MediaPipe's two-hand HandLandmarker; every frame's landmarks are handed to
+ * HandEngine, which does all smoothing, gesture recognition and Action
+ * dispatch. Low-confidence frames are filtered out here before they reach
+ * the engine.
  */
 export class MediaPipeGestureController implements IGestureController {
   private _isTracking = false;
@@ -45,24 +36,17 @@ export class MediaPipeGestureController implements IGestureController {
   private stream: MediaStream | null = null;
   private landmarker: HandLandmarker | null = null;
   private rafId: number | null = null;
-  private interpreter: GestureInterpreter;
-  private lockTracker: HandLockTracker;
-  private lastPrimaryPosition: Landmark | null = null;
-  private stopGestureSinceMs: number | null = null;
+  private engine: HandEngine;
   private onStatusChange?: (status: GestureControllerStatus, error?: string) => void;
   private onHandFrame?: (update: HandFrameUpdate) => void;
+  private lastVideoTimeMs = -1;
 
   constructor(options: MediaPipeGestureControllerOptions = {}) {
     this.onStatusChange = options.onStatusChange;
     this.onHandFrame = options.onHandFrame;
-    this.interpreter = new GestureInterpreter({
-      onModeChange: (change) => options.onModeChange?.(change.mode),
-    });
-    this.lockTracker = new HandLockTracker((change) => {
-      options.onLockStateChange?.(change.state, change.lockProgress);
-      if (change.state !== 'locked') {
-        this.interpreter.reset();
-      }
+    this.engine = new HandEngine({
+      onModeChange: options.onModeChange,
+      onHandCountChange: options.onHandCountChange,
     });
   }
 
@@ -71,28 +55,28 @@ export class MediaPipeGestureController implements IGestureController {
   }
 
   attach(dispatch: Dispatch): void {
-    this.interpreter.start(dispatch);
+    this.engine.start(dispatch);
   }
 
   detach(): void {
-    this.interpreter.stop();
+    this.engine.stop();
     void this.disable();
   }
 
   async enable(): Promise<void> {
     if (this._isTracking) return;
     this.onStatusChange?.('loading');
-    this.lockTracker.reset();
 
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 480, height: 360, facingMode: 'user' },
+        video: { width: 640, height: 480, facingMode: 'user' },
         audio: false,
       });
 
       this.video = document.createElement('video');
       this.video.srcObject = this.stream;
       this.video.playsInline = true;
+      this.video.muted = true;
       await this.video.play();
 
       if (!this.landmarker) {
@@ -101,10 +85,14 @@ export class MediaPipeGestureController implements IGestureController {
           baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
           runningMode: 'VIDEO',
           numHands: 2,
+          minHandDetectionConfidence: 0.6,
+          minHandPresenceConfidence: 0.6,
+          minTrackingConfidence: 0.6,
         });
       }
 
       this._isTracking = true;
+      this.engine.reset();
       this.onStatusChange?.('active');
       this.loop();
     } catch (error) {
@@ -124,10 +112,8 @@ export class MediaPipeGestureController implements IGestureController {
     this.stream = null;
     this.video = null;
     this._isTracking = false;
-    this.lastPrimaryPosition = null;
-    this.stopGestureSinceMs = null;
-    this.lockTracker.reset();
-    this.interpreter.reset();
+    this.lastVideoTimeMs = -1;
+    this.engine.reset();
     this.onStatusChange?.('idle');
   }
 
@@ -135,50 +121,17 @@ export class MediaPipeGestureController implements IGestureController {
     if (!this._isTracking || !this.video || !this.landmarker) return;
 
     const timestampMs = performance.now();
-    const result = this.landmarker.detectForVideo(this.video, timestampMs);
 
-    this.onHandFrame?.({ video: this.video, hands: result.landmarks as Landmark[][] });
+    // Only run detection on new video frames; rAF often outpaces the camera.
+    if (this.video.currentTime * 1000 !== this.lastVideoTimeMs) {
+      this.lastVideoTimeMs = this.video.currentTime * 1000;
+      const result = this.landmarker.detectForVideo(this.video, timestampMs);
 
-    const gestures = result.landmarks.map((landmarks) => classifyPose(landmarks));
-    const { primary, secondary } = selectHands(gestures, this.lastPrimaryPosition);
-    this.lastPrimaryPosition = primary?.position ?? null;
-
-    if (this.checkSecondHandStop(secondary, timestampMs)) {
-      this.rafId = requestAnimationFrame(this.loop);
-      return;
-    }
-
-    const locked = this.lockTracker.process(primary, timestampMs);
-
-    if (locked) {
-      this.interpreter.process(locked, timestampMs);
+      const hands = result.landmarks as Landmark[][];
+      this.onHandFrame?.({ video: this.video, hands });
+      this.engine.process(hands, timestampMs);
     }
 
     this.rafId = requestAnimationFrame(this.loop);
   };
-
-  /** Returns true if the stop gesture just fired (caller should skip normal processing this frame). */
-  private checkSecondHandStop(
-    secondary: ReturnType<typeof selectHands>['secondary'],
-    timestampMs: number,
-  ): boolean {
-    if (secondary?.pose !== 'open_palm') {
-      this.stopGestureSinceMs = null;
-      return false;
-    }
-
-    if (this.stopGestureSinceMs === null) {
-      this.stopGestureSinceMs = timestampMs;
-      return false;
-    }
-
-    if (timestampMs - this.stopGestureSinceMs >= STOP_HOLD_MS) {
-      this.stopGestureSinceMs = null;
-      this.lockTracker.reset();
-      this.interpreter.reset();
-      return true;
-    }
-
-    return false;
-  }
 }
