@@ -3,8 +3,8 @@ import { useGraphStore } from '@/store/graphStore';
 import type { GestureMode } from '@/store/graphStore';
 
 const MODE_LABEL: Record<GestureMode, string> = {
-  idle: 'Point to aim · pinch to select · fist resets · hold 2/3/4 fingers to jump',
-  orbit: 'Rotating — move your pinched hand · release to stop',
+  idle: 'Point to aim · pinch to open · fist goes back · hold 2/3/4 fingers to jump',
+  orbit: 'Tilting — move your pinched hand · release to stop',
   pan_zoom: 'Zoom & pan — stretch hands apart to zoom, move together to pan',
 };
 

@@ -7,7 +7,7 @@ import { useGraphStore } from '@/store/graphStore';
  */
 export function SearchBar() {
   const setSearch = useGraphStore((state) => state.setSearch);
-  const revealNode = useGraphStore((state) => state.revealNode);
+  const focusNode = useGraphStore((state) => state.focusNode);
   const matchedIds = useGraphStore((state) => state.matchedIds);
   const [value, setValue] = useState('');
 
@@ -19,7 +19,7 @@ export function SearchBar() {
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       const first = matchedIds.values().next().value;
-      if (first) revealNode(first);
+      if (first) focusNode(first);
     }
     if (e.key === 'Escape') {
       handleChange('');

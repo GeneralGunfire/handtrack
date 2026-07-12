@@ -44,6 +44,9 @@ export class MouseKeyboardSource implements InputSource {
       case '0':
         this.dispatch({ type: 'FIT' });
         break;
+      case 'Backspace':
+        this.dispatch({ type: 'BACK' });
+        break;
       default:
         return;
     }

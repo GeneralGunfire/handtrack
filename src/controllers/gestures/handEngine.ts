@@ -14,7 +14,7 @@ import type { GestureMode, HandFeatures, Landmark, PinchPhase } from './gestureT
  *   - Quick pinch (tap)           -> TAP: select / expand whatever is aimed at.
  *   - Pinch + drag                -> ORBIT: rotate around the graph.
  *   - Both hands pinched          -> PAN + ZOOM: stretch to zoom, move together to pan.
- *   - Fist held ~0.6s             -> FIT: reset the view.
+ *   - Fist held ~0.6s             -> BACK: step out to the parent folder.
  *
  * A pinch starts "undecided": if the hand travels beyond a small threshold it
  * becomes a drag (orbit); if it releases quickly without moving it was a tap.
@@ -439,7 +439,7 @@ export class HandEngine {
 
   private runIdleGestures(nowMs: number): void {
     for (const hand of this.hands) {
-      // Fist held -> reset view.
+      // Fist held -> back out one level.
       if (
         hand.fistSinceMs !== null &&
         nowMs - hand.fistSinceMs >= FIST_HOLD_MS &&
@@ -447,7 +447,7 @@ export class HandEngine {
       ) {
         this.lastFistResetMs = nowMs;
         hand.fistSinceMs = null;
-        this.dispatch?.({ type: 'FIT' });
+        this.dispatch?.({ type: 'BACK' });
         continue;
       }
 

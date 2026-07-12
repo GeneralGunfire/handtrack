@@ -2,34 +2,53 @@ import * as THREE from 'three';
 import type { PositionedNode } from '@/graph/types';
 
 export const ACCENT = '#22d3ee';
+const FOLDER_COLOR = '#38bdf8';
+const PARENT_COLOR = '#7d8db0';
+const FILE_FALLBACK = '#8b9bb8';
 
 const LANGUAGE_COLORS: Record<string, string> = {
-  ts: '#3b82f6',
+  ts: '#5b9dff',
   tsx: '#22d3ee',
   js: '#eab308',
   mjs: '#eab308',
-  css: '#a855f7',
+  css: '#c084fc',
   json: '#f59e0b',
-  md: '#94a3b8',
+  md: '#9fb0ca',
   csv: '#4ade80',
-  yml: '#f97316',
-  yaml: '#f97316',
-  svg: '#ec4899',
+  yml: '#fb923c',
+  yaml: '#fb923c',
+  svg: '#f472b6',
 };
-const FILE_FALLBACK = '#64748b';
 
 export function nodeColor(positioned: PositionedNode): string {
-  if (positioned.node.kind === 'folder') return ACCENT;
+  if (positioned.role === 'parent') return PARENT_COLOR;
+  if (positioned.node.kind === 'folder') return FOLDER_COLOR;
   return LANGUAGE_COLORS[positioned.node.language ?? ''] ?? FILE_FALLBACK;
+}
+
+/** World diameter of the disc per role. */
+export function nodeScale(positioned: PositionedNode): number {
+  switch (positioned.role) {
+    case 'center':
+      return 1.0;
+    case 'parent':
+      return 0.5;
+    case 'child':
+      return positioned.node.kind === 'folder' ? 0.62 : 0.46;
+    case 'mini':
+      return 0.14;
+  }
 }
 
 /** Everything attached to one rendered node, kept for animation + disposal. */
 export interface NodeVisual {
+  key: string;
+  nodeId: string;
+  role: PositionedNode['role'];
   group: THREE.Group;
-  core: THREE.Mesh;
-  glow: THREE.Sprite;
-  label: THREE.Sprite;
-  hit: THREE.Mesh;
+  disc: THREE.Sprite;
+  hoverRing: THREE.Sprite | null;
+  label: THREE.Sprite | null;
   targetPosition: THREE.Vector3;
   baseScale: number;
   /** Current animated emphasis 0..1 (hover/selection), eased in the render loop. */
@@ -37,127 +56,188 @@ export interface NodeVisual {
   spawnedAtMs: number;
 }
 
-let sharedGlowTexture: THREE.Texture | null = null;
+// -- shared textures -----------------------------------------------------------
 
-/** Soft radial gradient used by every node's additive glow sprite. */
-function glowTexture(): THREE.Texture {
-  if (sharedGlowTexture) return sharedGlowTexture;
+const textureCache = new Map<string, THREE.Texture>();
+
+/** Crisp filled disc with a soft edge and optional outline ring. */
+function discTexture(fill: string, ring: string | null): THREE.Texture {
+  const key = `${fill}|${ring ?? ''}`;
+  const cached = textureCache.get(key);
+  if (cached) return cached;
+
   const size = 128;
+  const c = size / 2;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d')!;
-  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  gradient.addColorStop(0, 'rgba(255,255,255,0.85)');
-  gradient.addColorStop(0.35, 'rgba(255,255,255,0.25)');
-  gradient.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = gradient;
+
+  // Subtle halo so discs feel lit without a separate glow sprite.
+  const halo = ctx.createRadialGradient(c, c, size * 0.3, c, c, c);
+  halo.addColorStop(0, `${fill}40`);
+  halo.addColorStop(1, `${fill}00`);
+  ctx.fillStyle = halo;
   ctx.fillRect(0, 0, size, size);
-  sharedGlowTexture = new THREE.CanvasTexture(canvas);
-  return sharedGlowTexture;
+
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.34, 0, Math.PI * 2);
+  ctx.fillStyle = fill;
+  ctx.fill();
+
+  // Inner shading for a slightly dimensional, polished look.
+  const shade = ctx.createRadialGradient(c - 14, c - 14, 4, c, c, size * 0.34);
+  shade.addColorStop(0, 'rgba(255,255,255,0.35)');
+  shade.addColorStop(0.5, 'rgba(255,255,255,0)');
+  shade.addColorStop(1, 'rgba(0,0,0,0.25)');
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.34, 0, Math.PI * 2);
+  ctx.fillStyle = shade;
+  ctx.fill();
+
+  if (ring) {
+    ctx.beginPath();
+    ctx.arc(c, c, size * 0.42, 0, Math.PI * 2);
+    ctx.strokeStyle = ring;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  textureCache.set(key, texture);
+  return texture;
 }
 
-function makeLabelSprite(text: string, color: string, isFolder: boolean): THREE.Sprite {
-  const font = isFolder ? '600 30px Inter, sans-serif' : '400 26px Inter, sans-serif';
+/** White targeting ring shown around the hovered node. */
+function hoverRingTexture(): THREE.Texture {
+  const key = 'hover-ring';
+  const cached = textureCache.get(key);
+  if (cached) return cached;
+
+  const size = 128;
+  const c = size / 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.44, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+  ctx.lineWidth = 5;
+  ctx.stroke();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  textureCache.set(key, texture);
+  return texture;
+}
+
+function makeLabelSprite(positioned: PositionedNode): THREE.Sprite {
+  const { node, role } = positioned;
+  const isCenter = role === 'center';
+  const isFolder = node.kind === 'folder';
+  const text =
+    role === 'parent'
+      ? `← ${node.name}`
+      : isFolder && node.children?.length
+        ? `${node.name} · ${node.children.length}`
+        : node.name;
+
+  const font = isCenter
+    ? '600 40px Inter, sans-serif'
+    : isFolder
+      ? '600 32px Inter, sans-serif'
+      : '400 30px Inter, sans-serif';
+
   const measure = document.createElement('canvas').getContext('2d')!;
   measure.font = font;
   const textWidth = Math.ceil(measure.measureText(text).width);
 
-  const padX = 18;
-  const height = 44;
+  const padX = 22;
+  const height = isCenter ? 60 : 50;
   const canvas = document.createElement('canvas');
   canvas.width = textWidth + padX * 2;
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
 
-  ctx.fillStyle = 'rgba(8, 12, 18, 0.55)';
+  ctx.fillStyle = 'rgba(7, 11, 18, 0.72)';
   ctx.beginPath();
-  ctx.roundRect(0, 0, canvas.width, height, 10);
+  ctx.roundRect(0, 0, canvas.width, height, height / 2);
   ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
 
   ctx.font = font;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = color;
+  ctx.fillStyle = isCenter ? '#f5f8ff' : isFolder ? '#bfeaf7' : '#c9d4e6';
   ctx.fillText(text, canvas.width / 2, height / 2 + 1);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  const material = new THREE.SpriteMaterial({
-    map: texture,
-    transparent: true,
-    depthWrite: false,
-  });
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(material);
-  const worldHeight = isFolder ? 0.24 : 0.2;
+  const worldHeight = isCenter ? 0.34 : 0.26;
   sprite.scale.set((canvas.width / height) * worldHeight, worldHeight, 1);
   return sprite;
 }
 
-/** Build the meshes for one node: geometric core, additive glow halo,
- *  name label, and an oversized invisible hit sphere for forgiving raycasts. */
+// -- build / dispose -----------------------------------------------------------
+
+export function visualKey(positioned: PositionedNode): string {
+  return positioned.role === 'mini' ? `mini:${positioned.node.id}` : positioned.node.id;
+}
+
+/** Build the sprites for one node: disc, optional hover ring, optional label. */
 export function createNodeVisual(positioned: PositionedNode, nowMs: number): NodeVisual {
-  const isFolder = positioned.node.kind === 'folder';
+  const { role } = positioned;
   const color = nodeColor(positioned);
   const group = new THREE.Group();
+  const baseScale = nodeScale(positioned);
 
-  const sizeBytes = positioned.node.size ?? 1500;
-  const baseScale = isFolder
-    ? positioned.depth === 0
-      ? 1.5
-      : 1.15
-    : 0.7 + Math.min(sizeBytes / 6000, 1) * 0.35;
-
-  const geometry = isFolder
-    ? new THREE.OctahedronGeometry(0.22, 0)
-    : new THREE.IcosahedronGeometry(0.13, 1);
-  const material = new THREE.MeshStandardMaterial({
-    color,
-    emissive: color,
-    emissiveIntensity: isFolder ? 0.7 : 0.45,
-    roughness: 0.35,
-    metalness: 0.2,
-    transparent: true,
-    opacity: isFolder ? 0.92 : 0.95,
-  });
-  const core = new THREE.Mesh(geometry, material);
-  group.add(core);
-
-  const glow = new THREE.Sprite(
+  const ring = role === 'center' ? 'rgba(255,255,255,0.85)' : null;
+  const disc = new THREE.Sprite(
     new THREE.SpriteMaterial({
-      map: glowTexture(),
-      color,
+      map: discTexture(color, ring),
       transparent: true,
-      opacity: isFolder ? 0.5 : 0.35,
-      blending: THREE.AdditiveBlending,
+      opacity: role === 'mini' ? 0.45 : 1,
       depthWrite: false,
     }),
   );
-  glow.scale.setScalar(isFolder ? 1.1 : 0.7);
-  group.add(glow);
+  group.add(disc);
 
-  const childCount = positioned.node.children?.length ?? 0;
-  const labelText = isFolder ? `${positioned.node.name} · ${childCount}` : positioned.node.name;
-  const label = makeLabelSprite(labelText, isFolder ? ACCENT : '#c8d2e0', isFolder);
-  label.position.y = isFolder ? -0.42 : -0.3;
-  group.add(label);
+  let hoverRing: THREE.Sprite | null = null;
+  let label: THREE.Sprite | null = null;
 
-  const hit = new THREE.Mesh(
-    new THREE.SphereGeometry(0.34, 8, 8),
-    new THREE.MeshBasicMaterial({ visible: false }),
-  );
-  hit.userData.nodeId = positioned.node.id;
-  group.add(hit);
+  if (role !== 'mini') {
+    hoverRing = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: hoverRingTexture(),
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      }),
+    );
+    hoverRing.scale.setScalar(1.35);
+    group.add(hoverRing);
+
+    label = makeLabelSprite(positioned);
+    label.position.y = -(baseScale / 2 + 0.24);
+    group.add(label);
+  }
 
   group.position.set(...positioned.position);
   group.scale.setScalar(0.001);
 
   return {
+    key: visualKey(positioned),
+    nodeId: positioned.node.id,
+    role,
     group,
-    core,
-    glow,
+    disc,
+    hoverRing,
     label,
-    hit,
     targetPosition: new THREE.Vector3(...positioned.position),
     baseScale,
     emphasis: 0,
@@ -167,12 +247,11 @@ export function createNodeVisual(positioned: PositionedNode, nowMs: number): Nod
 
 export function disposeNodeVisual(visual: NodeVisual): void {
   visual.group.removeFromParent();
-  visual.core.geometry.dispose();
-  (visual.core.material as THREE.Material).dispose();
-  visual.glow.material.map = null; // shared texture — don't dispose it
-  visual.glow.material.dispose();
-  visual.label.material.map?.dispose();
-  visual.label.material.dispose();
-  visual.hit.geometry.dispose();
-  (visual.hit.material as THREE.Material).dispose();
+  // Disc + hover-ring textures are shared via cache; only dispose materials.
+  visual.disc.material.dispose();
+  visual.hoverRing?.material.dispose();
+  if (visual.label) {
+    visual.label.material.map?.dispose();
+    visual.label.material.dispose();
+  }
 }

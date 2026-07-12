@@ -2,15 +2,19 @@ import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { useGraphStore } from '@/store/graphStore';
 import { useStageBinding } from '@/controllers/context';
-import { createNodeVisual, disposeNodeVisual } from './nodeVisuals';
+import { createNodeVisual, disposeNodeVisual, visualKey } from './nodeVisuals';
 import type { NodeVisual } from './nodeVisuals';
 
+/** Targeting: the pointer snaps to the nearest node within this many pixels,
+ *  so neither mouse nor a jittery hand needs pixel-perfect aim. */
+const SNAP_RADIUS_PX = 56;
+
 /**
- * The 3D stage: renders the laid-out file tree as a holographic node
- * constellation. Owns the Three.js scene, a raycaster that resolves the
- * store's pointer into a hovered node every frame, and all node/edge
- * animation. Camera follows the store's orbit state with critically damped
- * smoothing so mouse and hand input both feel fluid.
+ * The hub-and-spoke stage. Renders the focused folder at the center with its
+ * children ringed around it, animates every refocus (surviving nodes glide to
+ * their new positions, new spokes fly out of the center), and resolves the
+ * store's pointer to the nearest on-screen node by projection — a forgiving
+ * snap-target model instead of precise raycasts.
  */
 export function GraphViewer() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -31,12 +35,11 @@ export function GraphViewer() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#05070c');
-    scene.fog = new THREE.Fog('#05070c', 14, 34);
+    scene.fog = new THREE.Fog('#05070c', 16, 40);
 
     const camera = new THREE.PerspectiveCamera(
       50,
@@ -45,19 +48,14 @@ export function GraphViewer() {
       80,
     );
 
-    scene.add(new THREE.AmbientLight('#7f96c4', 0.7));
-    const key = new THREE.DirectionalLight('#dfeaff', 1.6);
-    key.position.set(4, 6, 8);
-    scene.add(key);
-    const rim = new THREE.PointLight('#22d3ee', 30, 50);
-    rim.position.set(-8, 4, -6);
-    scene.add(rim);
+    // Sprites are unlit; lights only matter if meshes are added later.
+    scene.add(new THREE.AmbientLight('#ffffff', 1));
 
     // Starfield backdrop.
-    const starCount = 900;
+    const starCount = 700;
     const starPositions = new Float32Array(starCount * 3);
     for (let i = 0; i < starCount; i++) {
-      const r = 18 + Math.random() * 14;
+      const r = 20 + Math.random() * 14;
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
       starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
@@ -67,30 +65,13 @@ export function GraphViewer() {
     const starGeometry = new THREE.BufferGeometry();
     starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
     const starMaterial = new THREE.PointsMaterial({
-      color: '#5f7396',
-      size: 0.05,
+      color: '#4d5f80',
+      size: 0.045,
       sizeAttenuation: true,
       transparent: true,
-      opacity: 0.75,
+      opacity: 0.6,
     });
     scene.add(new THREE.Points(starGeometry, starMaterial));
-
-    // Holographic ground rings, JARVIS-style.
-    const ringGroup = new THREE.Group();
-    for (let i = 1; i <= 4; i++) {
-      const ring = new THREE.Mesh(
-        new THREE.RingGeometry(i * 2.4 - 0.012, i * 2.4 + 0.012, 128),
-        new THREE.MeshBasicMaterial({
-          color: '#155e75',
-          transparent: true,
-          opacity: 0.35 - i * 0.06,
-          side: THREE.DoubleSide,
-        }),
-      );
-      ringGroup.add(ring);
-    }
-    ringGroup.position.z = -3.2;
-    scene.add(ringGroup);
 
     const graphGroup = new THREE.Group();
     scene.add(graphGroup);
@@ -98,18 +79,25 @@ export function GraphViewer() {
     // -- node + edge sync --
 
     const visuals = new Map<string, NodeVisual>();
-    const hitMeshes: THREE.Mesh[] = [];
 
-    // Edge buffer, rebuilt when the layout changes, repositioned every frame
-    // so lines track the nodes' animated (lerped) positions.
-    let edgePairs: Array<[string, string]> = [];
-    const edgeGeometry = new THREE.BufferGeometry();
-    let edgeAttribute = new THREE.BufferAttribute(new Float32Array(0), 3);
-    const edgeLines = new THREE.LineSegments(
-      edgeGeometry,
-      new THREE.LineBasicMaterial({ color: '#0e7490', transparent: true, opacity: 0.45 }),
+    // Edge buffers: main spokes (bright) and mini threads (faint), repositioned
+    // every frame so lines track the nodes' animated positions.
+    let mainPairs: Array<[string, string]> = [];
+    let miniPairs: Array<[string, string]> = [];
+    const mainGeometry = new THREE.BufferGeometry();
+    const miniGeometry = new THREE.BufferGeometry();
+    let mainAttribute = new THREE.BufferAttribute(new Float32Array(0), 3);
+    let miniAttribute = new THREE.BufferAttribute(new Float32Array(0), 3);
+    const mainLines = new THREE.LineSegments(
+      mainGeometry,
+      new THREE.LineBasicMaterial({ color: '#2b6f85', transparent: true, opacity: 0.75 }),
     );
-    graphGroup.add(edgeLines);
+    const miniLines = new THREE.LineSegments(
+      miniGeometry,
+      new THREE.LineBasicMaterial({ color: '#1d3a52', transparent: true, opacity: 0.5 }),
+    );
+    graphGroup.add(mainLines);
+    graphGroup.add(miniLines);
 
     const syncLayout = () => {
       const layout = useGraphStore.getState().layout;
@@ -117,33 +105,51 @@ export function GraphViewer() {
       const seen = new Set<string>();
 
       for (const positioned of layout.nodes) {
-        seen.add(positioned.node.id);
-        const existing = visuals.get(positioned.node.id);
-        if (existing) {
+        const key = visualKey(positioned);
+        seen.add(key);
+        const existing = visuals.get(key);
+        if (existing && existing.role === positioned.role) {
           existing.targetPosition.set(...positioned.position);
         } else {
-          const visual = createNodeVisual(positioned, nowMs);
-          // New nodes spawn at their parent's position and fly outward.
-          const parent = positioned.parentId ? visuals.get(positioned.parentId) : null;
-          if (parent) visual.group.position.copy(parent.group.position);
-          visuals.set(positioned.node.id, visual);
-          graphGroup.add(visual.group);
+          if (existing) {
+            // Same node, new role (e.g. child -> center): rebuild its look but
+            // keep continuity by spawning at its previous position.
+            const from = existing.group.position.clone();
+            disposeNodeVisual(existing);
+            const visual = createNodeVisual(positioned, nowMs);
+            visual.group.position.copy(from);
+            visuals.set(key, visual);
+            graphGroup.add(visual.group);
+          } else {
+            // Brand-new nodes fly out of the center.
+            const visual = createNodeVisual(positioned, nowMs);
+            visual.group.position.set(0, 0, 0);
+            visuals.set(key, visual);
+            graphGroup.add(visual.group);
+          }
         }
       }
 
-      for (const [id, visual] of visuals) {
-        if (!seen.has(id)) {
+      for (const [key, visual] of visuals) {
+        if (!seen.has(key)) {
           disposeNodeVisual(visual);
-          visuals.delete(id);
+          visuals.delete(key);
         }
       }
 
-      hitMeshes.length = 0;
-      for (const visual of visuals.values()) hitMeshes.push(visual.hit);
-
-      edgePairs = layout.edges.map((e) => [e.fromId, e.toId]);
-      edgeAttribute = new THREE.BufferAttribute(new Float32Array(edgePairs.length * 6), 3);
-      edgeGeometry.setAttribute('position', edgeAttribute);
+      mainPairs = [];
+      miniPairs = [];
+      for (const edge of layout.edges) {
+        if (edge.kind === 'main') {
+          mainPairs.push([edge.fromId, edge.toId]);
+        } else {
+          miniPairs.push([edge.fromId, `mini:${edge.toId}`]);
+        }
+      }
+      mainAttribute = new THREE.BufferAttribute(new Float32Array(mainPairs.length * 6), 3);
+      miniAttribute = new THREE.BufferAttribute(new Float32Array(miniPairs.length * 6), 3);
+      mainGeometry.setAttribute('position', mainAttribute);
+      miniGeometry.setAttribute('position', miniAttribute);
     };
 
     syncLayout();
@@ -153,8 +159,8 @@ export function GraphViewer() {
 
     // -- per-frame animation --
 
-    const raycaster = new THREE.Raycaster();
     const chase = { ...useGraphStore.getState().camera };
+    const projected = new THREE.Vector3();
     let rafId = 0;
     let running = true;
     let lastTimeMs = 0;
@@ -166,7 +172,7 @@ export function GraphViewer() {
       lastTimeMs = timeMs;
 
       // Camera chase (frame-rate-independent exponential smoothing).
-      const k = 1 - Math.exp(-dt * 14);
+      const k = 1 - Math.exp(-dt * 12);
       const target = store.camera;
       chase.yaw += (target.yaw - chase.yaw) * k;
       chase.pitch += (target.pitch - chase.pitch) * k;
@@ -183,54 +189,60 @@ export function GraphViewer() {
       );
       camera.lookAt(chase.targetX, chase.targetY, chase.targetZ);
 
-      // Hover raycast from the store pointer (mouse or hand cursor).
-      raycaster.setFromCamera(
-        new THREE.Vector2(store.pointer.x * 2 - 1, -(store.pointer.y * 2 - 1)),
-        camera,
-      );
-      const hits = raycaster.intersectObjects(hitMeshes, false);
-      const hoveredId = hits.length > 0 ? (hits[0].object.userData.nodeId as string) : null;
+      // Snap targeting: project every interactive node to screen space and
+      // hover the nearest one within SNAP_RADIUS_PX of the pointer.
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      const px = store.pointer.x * w;
+      const py = store.pointer.y * h;
+      let hoveredId: string | null = null;
+      let bestDist = SNAP_RADIUS_PX;
+      for (const visual of visuals.values()) {
+        if (visual.role === 'mini') continue;
+        projected.copy(visual.group.position).project(camera);
+        if (projected.z > 1) continue; // behind the camera
+        const sx = (projected.x + 1) * 0.5 * w;
+        const sy = (1 - projected.y) * 0.5 * h;
+        const d = Math.hypot(sx - px, sy - py);
+        if (d < bestDist) {
+          bestDist = d;
+          hoveredId = visual.nodeId;
+        }
+      }
       store.setHovered(hoveredId);
 
       // Node animation: position lerp, spawn scale-in, emphasis easing.
       const nowMs = performance.now();
-      const posK = 1 - Math.exp(-dt * 8);
-      for (const [id, visual] of visuals) {
+      const posK = 1 - Math.exp(-dt * 9);
+      for (const visual of visuals.values()) {
         visual.group.position.lerp(visual.targetPosition, posK);
 
         const spawn = Math.min((nowMs - visual.spawnedAtMs) / 400, 1);
         const spawnEase = 1 - Math.pow(1 - spawn, 3);
 
-        const isHovered = id === store.hoveredId;
-        const isSelected = id === store.selectedId;
-        const isMatched = store.matchedIds.has(id);
-        const targetEmphasis = isSelected ? 1 : isHovered ? 0.75 : isMatched ? 0.5 : 0;
-        visual.emphasis += (targetEmphasis - visual.emphasis) * Math.min(dt * 10, 1);
+        const isHovered = visual.role !== 'mini' && visual.nodeId === store.hoveredId;
+        const isSelected = visual.nodeId === store.selectedId && visual.role !== 'mini';
+        const isMatched = store.matchedIds.has(visual.nodeId) && visual.role !== 'mini';
+        const targetEmphasis = isHovered ? 1 : isSelected ? 0.7 : isMatched ? 0.45 : 0;
+        visual.emphasis += (targetEmphasis - visual.emphasis) * Math.min(dt * 12, 1);
 
-        visual.group.scale.setScalar(visual.baseScale * spawnEase * (1 + visual.emphasis * 0.35));
-        visual.core.rotation.y += dt * (0.4 + visual.emphasis * 1.6);
+        visual.group.scale.setScalar(visual.baseScale * spawnEase * (1 + visual.emphasis * 0.22));
 
-        const material = visual.core.material as THREE.MeshStandardMaterial;
-        material.emissiveIntensity = 0.45 + visual.emphasis * 1.3;
-        visual.glow.material.opacity = 0.3 + visual.emphasis * 0.5;
-
-        // Labels: folders always; files when emphasized or searched.
-        const isFolder = visual.core.geometry.type === 'OctahedronGeometry';
-        visual.label.visible = isFolder || visual.emphasis > 0.05 || isMatched;
+        if (visual.hoverRing) {
+          visual.hoverRing.material.opacity = visual.emphasis * 0.95;
+          // Pinch feedback: the targeting ring tightens onto the node.
+          const gripped = store.pointerPinching && isHovered;
+          visual.hoverRing.scale.setScalar(gripped ? 1.12 : 1.35);
+        }
       }
 
       // Edges follow the animated node positions.
-      for (let i = 0; i < edgePairs.length; i++) {
-        const from = visuals.get(edgePairs[i][0]);
-        const to = visuals.get(edgePairs[i][1]);
-        if (!from || !to) continue;
-        edgeAttribute.setXYZ(i * 2, from.group.position.x, from.group.position.y, from.group.position.z);
-        edgeAttribute.setXYZ(i * 2 + 1, to.group.position.x, to.group.position.y, to.group.position.z);
-      }
-      edgeAttribute.needsUpdate = true;
-      edgeGeometry.computeBoundingSphere();
-
-      ringGroup.rotation.z += dt * 0.02;
+      updateEdges(mainPairs, mainAttribute, visuals);
+      updateEdges(miniPairs, miniAttribute, visuals);
+      mainAttribute.needsUpdate = true;
+      miniAttribute.needsUpdate = true;
+      mainGeometry.computeBoundingSphere();
+      miniGeometry.computeBoundingSphere();
 
       renderer.render(scene, camera);
       rafId = requestAnimationFrame(renderLoop);
@@ -256,12 +268,10 @@ export function GraphViewer() {
       visuals.clear();
       starGeometry.dispose();
       starMaterial.dispose();
-      edgeGeometry.dispose();
-      (edgeLines.material as THREE.Material).dispose();
-      ringGroup.children.forEach((ring) => {
-        (ring as THREE.Mesh).geometry.dispose();
-        ((ring as THREE.Mesh).material as THREE.Material).dispose();
-      });
+      mainGeometry.dispose();
+      miniGeometry.dispose();
+      (mainLines.material as THREE.Material).dispose();
+      (miniLines.material as THREE.Material).dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
@@ -274,4 +284,18 @@ export function GraphViewer() {
       style={{ cursor: 'crosshair' }}
     />
   );
+}
+
+function updateEdges(
+  pairs: Array<[string, string]>,
+  attribute: THREE.BufferAttribute,
+  visuals: Map<string, NodeVisual>,
+): void {
+  for (let i = 0; i < pairs.length; i++) {
+    const from = visuals.get(pairs[i][0]);
+    const to = visuals.get(pairs[i][1]);
+    if (!from || !to) continue;
+    attribute.setXYZ(i * 2, from.group.position.x, from.group.position.y, from.group.position.z);
+    attribute.setXYZ(i * 2 + 1, to.group.position.x, to.group.position.y, to.group.position.z);
+  }
 }

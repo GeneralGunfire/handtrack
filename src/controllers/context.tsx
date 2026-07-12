@@ -109,9 +109,13 @@ export function InputManagerProvider({ children }: InputManagerProviderProps) {
           break;
         case 'BOOKMARK': {
           const bookmark = BOOKMARKS[action.slot];
-          if (bookmark) store.revealNode(bookmark.id);
+          if (bookmark) store.focusNode(bookmark.id);
           break;
         }
+        case 'BACK':
+          // At the root there's nothing to back out to — reset the view instead.
+          if (!store.goBack()) store.resetCamera();
+          break;
         case 'TOGGLE_UI':
           store.toggleUI();
           break;

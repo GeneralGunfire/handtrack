@@ -1,98 +1,98 @@
 import type { GraphEdge, GraphLayout, PositionedNode, TreeNode } from './types';
+import { findPath } from './nodeUtils';
 
-/** Radius of the first ring, and minimum extra radius per depth level. */
-const RING_BASE = 2.3;
-const RING_STEP = 1.9;
-/** Minimum arc distance between sibling nodes so labels never overlap. */
-const MIN_SIBLING_SPACING = 0.85;
-/** Depth pushes nodes slightly back so the tree reads as a shallow 3D cone. */
-const DEPTH_Z = -0.5;
-
-/**
- * Radial wedge layout: the root sits at the origin and each expanded folder's
- * children fan out inside their parent's angular wedge. Wedge widths are
- * proportional to visible subtree size so dense folders get more room, and
- * each ring's radius grows as needed so siblings always keep a minimum arc
- * spacing — a 20-file folder pushes its ring outward instead of clumping.
- * Deterministic per-node jitter keeps it reading as a constellation.
+/*
+ * Hub-and-spoke focus layout: the focused folder sits at the origin, its
+ * parent floats up-left as a "back" spoke, and its children ring around it —
+ * folders first, then files, evenly spaced. Each folder spoke carries a small
+ * cluster of faded mini-dots (its own children) behind it, so you can see at
+ * a glance which branches have content without rendering the whole tree.
+ * One level of real, interactive nodes at a time — never the whole graph.
  */
-export function computeLayout(root: TreeNode, expandedIds: ReadonlySet<string>): GraphLayout {
+
+/** Ring radius grows with child count so spokes always have breathing room. */
+const MIN_RING_RADIUS = 2.6;
+const SPOKE_ARC_SPACING = 1.15;
+/** Where the parent "back" spoke sits (radians; up-left). */
+const PARENT_ANGLE = (3 * Math.PI) / 4;
+const PARENT_RADIUS = 3.4;
+/** Mini-dot cluster: how many grandchildren to preview per folder spoke. */
+const MAX_MINI_DOTS = 8;
+const MINI_RADIUS = 0.62;
+
+export function computeLayout(root: TreeNode, focusedId: string): GraphLayout {
+  const path = findPath(root, focusedId);
+  const focused = path.length > 0 ? path[path.length - 1] : root;
+  const parent = path.length > 1 ? path[path.length - 2] : null;
+
   const nodes: PositionedNode[] = [];
   const edges: GraphEdge[] = [];
   const byId = new Map<string, PositionedNode>();
 
-  /** Visible descendant count — drives how much angular room a subtree gets. */
-  const weight = (node: TreeNode): number => {
-    if (node.kind !== 'folder' || !expandedIds.has(node.id) || !node.children?.length) {
-      return 1;
-    }
-    return 1 + node.children.reduce((sum, child) => sum + weight(child), 0) * 0.85;
-  };
-
-  const place = (
-    node: TreeNode,
-    depth: number,
-    parentId: string | null,
-    angleStart: number,
-    angleEnd: number,
-    radius: number,
-  ): void => {
-    const midAngle = (angleStart + angleEnd) / 2;
-    const jitter = hash01(node.id);
-    const r = radius * (1 + (jitter - 0.5) * 0.08);
-    const expanded = node.kind === 'folder' && expandedIds.has(node.id);
-
-    const positioned: PositionedNode = {
-      node,
-      depth,
-      parentId,
-      expanded,
-      position: [
-        Math.cos(midAngle) * r,
-        Math.sin(midAngle) * r,
-        depth * DEPTH_Z + (jitter - 0.5) * 0.4,
-      ],
-    };
+  const add = (positioned: PositionedNode) => {
     nodes.push(positioned);
-    byId.set(node.id, positioned);
-    if (parentId) {
-      edges.push({ fromId: parentId, toId: node.id });
-    }
-
-    if (!expanded || !node.children?.length) return;
-
-    const total = node.children.reduce((sum, child) => sum + weight(child), 0);
-    // The root spreads over the full circle. Nested folders start from a
-    // slightly widened copy of their own wedge, but a folder with many
-    // children may claim a wider fan — angular overlap with siblings is fine
-    // because their rings sit at different radii.
-    const naturalSpan = Math.min((angleEnd - angleStart) * 1.4, Math.PI * 1.6);
-    const span =
-      depth === 0
-        ? Math.PI * 2
-        : Math.min(Math.max(naturalSpan, node.children.length * 0.3), Math.PI * 1.7);
-
-    // Push the children's ring outward until every sibling has room. The
-    // narrowest wedge goes to weight-1 leaves, so size the radius for them —
-    // capped so a huge folder crowds slightly instead of flying off-screen.
-    const leafWedge = (1 / total) * span;
-    const requiredRadius = MIN_SIBLING_SPACING / Math.max(leafWedge, 1e-3);
-    const childRadius = Math.max(
-      radius + RING_STEP,
-      depth === 0 ? RING_BASE : 0,
-      Math.min(requiredRadius, radius + RING_STEP * 3),
-    );
-
-    let cursor = midAngle - span / 2;
-    for (const child of node.children) {
-      const childSpan = (weight(child) / total) * span;
-      place(child, depth + 1, node.id, cursor, cursor + childSpan, childRadius);
-      cursor += childSpan;
-    }
+    if (positioned.role !== 'mini') byId.set(positioned.node.id, positioned);
   };
 
-  place(root, 0, null, 0, Math.PI * 2, 0);
-  return { nodes, edges, byId };
+  add({ node: focused, role: 'center', anchorId: null, position: [0, 0, 0] });
+
+  if (parent) {
+    add({
+      node: parent,
+      role: 'parent',
+      anchorId: null,
+      position: [
+        Math.cos(PARENT_ANGLE) * PARENT_RADIUS,
+        Math.sin(PARENT_ANGLE) * PARENT_RADIUS,
+        -0.3,
+      ],
+    });
+    edges.push({ fromId: focused.id, toId: parent.id, kind: 'main' });
+  }
+
+  // Children ring: folders first, then files, clockwise from the top.
+  const children = [...(focused.children ?? [])].sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  const count = children.length;
+  if (count === 0) return { focusedId: focused.id, nodes, edges, byId };
+
+  const radius = Math.max(MIN_RING_RADIUS, (count * SPOKE_ARC_SPACING) / (Math.PI * 2));
+
+  children.forEach((child, i) => {
+    // Start at the top and sweep clockwise around the ring.
+    const t = i / count;
+    const angle = Math.PI / 2 - t * Math.PI * 2;
+    const jitter = hash01(child.id);
+    const x = Math.cos(angle) * radius;
+    const y = Math.sin(angle) * radius;
+    const z = (jitter - 0.5) * 0.24;
+
+    add({ node: child, role: 'child', anchorId: null, position: [x, y, z] });
+    edges.push({ fromId: focused.id, toId: child.id, kind: 'main' });
+
+    // Preview cluster behind folder spokes.
+    if (child.kind === 'folder' && child.children?.length) {
+      const minis = child.children.slice(0, MAX_MINI_DOTS);
+      const away = Math.atan2(y, x); // outward direction from the center
+      minis.forEach((grandchild, j) => {
+        const spread = (j / Math.max(minis.length - 1, 1) - 0.5) * (Math.PI * 0.9);
+        const mx = x + Math.cos(away + spread) * MINI_RADIUS;
+        const my = y + Math.sin(away + spread) * MINI_RADIUS;
+        add({
+          node: grandchild,
+          role: 'mini',
+          anchorId: child.id,
+          position: [mx, my, z - 0.15],
+        });
+        edges.push({ fromId: child.id, toId: grandchild.id, kind: 'mini' });
+      });
+    }
+  });
+
+  return { focusedId: focused.id, nodes, edges, byId };
 }
 
 /** Deterministic 0..1 hash from a string, for stable per-node jitter. */

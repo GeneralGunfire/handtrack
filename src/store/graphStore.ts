@@ -8,7 +8,8 @@ import type { GraphLayout, TreeNode } from '@/graph/types';
 export type GestureMode = 'idle' | 'orbit' | 'pan_zoom';
 export type PointerSource = 'mouse' | 'hand';
 
-/** Spherical orbit camera around a pannable 3D focus point. */
+/** Spherical orbit camera around a pannable focus point. The hub view is
+ *  mostly flat: yaw/pitch are clamped to a gentle parallax range. */
 export interface CameraState {
   yaw: number;
   pitch: number;
@@ -19,20 +20,22 @@ export interface CameraState {
 }
 
 export const CAMERA_LIMITS = {
-  minPitch: -1.35,
-  maxPitch: 1.35,
-  minDistance: 1.6,
-  maxDistance: 30,
-  maxPan: 14,
+  minYaw: -0.55,
+  maxYaw: 0.55,
+  minPitch: -0.15,
+  maxPitch: 0.75,
+  minDistance: 3,
+  maxDistance: 16,
+  maxPan: 4,
 };
 
 export const DEFAULT_CAMERA: CameraState = {
   yaw: 0,
-  pitch: 0.35,
-  distance: 13,
+  pitch: 0.22,
+  distance: 8.5,
   targetX: 0,
   targetY: 0,
-  targetZ: -0.8,
+  targetZ: 0,
 };
 
 /** Finger-count gesture shortcuts: hold N fingers up to fly to these nodes. */
@@ -42,11 +45,10 @@ export const BOOKMARKS: Record<number, { id: string; label: string }> = {
   4: { id: 'pipeline/src/registry.ts', label: 'Dataset registry' },
 };
 
-const INITIAL_EXPANDED = new Set(['root', 'frontend', 'pipeline']);
-
 interface GraphState {
   tree: TreeNode;
-  expandedIds: Set<string>;
+  /** The folder currently at the center of the hub view. */
+  focusedId: string;
   layout: GraphLayout;
 
   hoveredId: string | null;
@@ -73,18 +75,18 @@ interface GraphState {
   gestureMode: GestureMode;
 
   setHovered: (id: string | null) => void;
-  /** Commit on a node: folders expand/collapse, files open a preview. */
+  /** Commit on a node: folders refocus the hub, files open a preview. */
   tapNode: (id: string) => void;
+  /** Refocus the hub on a folder (or on a file's parent, previewing the file). */
+  focusNode: (id: string) => void;
+  /** Step back to the focused folder's parent. Returns false at the root. */
+  goBack: () => boolean;
   closePreview: () => void;
 
   orbitBy: (dyaw: number, dpitch: number) => void;
   dollyBy: (delta: number) => void;
   panBy: (dx: number, dy: number) => void;
   resetCamera: () => void;
-  /** Fly the camera focus to a node and pull in close. */
-  focusOn: (id: string) => void;
-  /** Expand every ancestor folder of a node, then focus and select it. */
-  revealNode: (id: string) => void;
 
   setPointer: (x: number, y: number, source: PointerSource) => void;
   setPointerPinching: (pinching: boolean) => void;
@@ -113,10 +115,15 @@ function collectMatches(root: TreeNode, query: string): Set<string> {
   return matches;
 }
 
+/** Recentering resets pan drift but preserves the user's zoom + tilt. */
+function recenteredCamera(camera: CameraState): CameraState {
+  return { ...camera, targetX: 0, targetY: 0, targetZ: 0 };
+}
+
 export const useGraphStore = create<GraphState>((set, get) => ({
   tree: MERIDIAN_TREE,
-  expandedIds: INITIAL_EXPANDED,
-  layout: computeLayout(MERIDIAN_TREE, INITIAL_EXPANDED),
+  focusedId: 'root',
+  layout: computeLayout(MERIDIAN_TREE, 'root'),
 
   hoveredId: null,
   selectedId: null,
@@ -149,28 +156,44 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const { node } = positioned;
 
     if (node.kind === 'folder') {
-      const expandedIds = new Set(state.expandedIds);
-      const willExpand = !expandedIds.has(id);
-      if (willExpand) {
-        expandedIds.add(id);
-      } else {
-        // Collapse the folder and everything beneath it.
-        const removeSubtree = (n: TreeNode) => {
-          expandedIds.delete(n.id);
-          n.children?.forEach(removeSubtree);
-        };
-        removeSubtree(node);
-      }
-      set({
-        expandedIds,
-        layout: computeLayout(state.tree, expandedIds),
-        selectedId: id,
-      });
-      if (willExpand) get().focusOn(id);
+      get().focusNode(node.id);
     } else {
-      set({ selectedId: id, previewNode: node });
-      get().focusOn(id);
+      set({ selectedId: node.id, previewNode: node });
     }
+  },
+
+  focusNode: (id) => {
+    const state = get();
+    const path = findPath(state.tree, id);
+    if (path.length === 0) return;
+    const target = path[path.length - 1];
+
+    if (target.kind === 'file') {
+      // Focus the file's parent folder and open the file.
+      const parent = path.length > 1 ? path[path.length - 2] : state.tree;
+      set({
+        focusedId: parent.id,
+        layout: computeLayout(state.tree, parent.id),
+        selectedId: target.id,
+        previewNode: target,
+        camera: recenteredCamera(state.camera),
+      });
+    } else {
+      set({
+        focusedId: target.id,
+        layout: computeLayout(state.tree, target.id),
+        selectedId: target.id,
+        camera: recenteredCamera(state.camera),
+      });
+    }
+  },
+
+  goBack: () => {
+    const state = get();
+    const path = findPath(state.tree, state.focusedId);
+    if (path.length <= 1) return false;
+    get().focusNode(path[path.length - 2].id);
+    return true;
   },
 
   closePreview: () => set({ previewNode: null }),
@@ -179,7 +202,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set((state) => ({
       camera: {
         ...state.camera,
-        yaw: state.camera.yaw + dyaw,
+        yaw: clamp(state.camera.yaw + dyaw, CAMERA_LIMITS.minYaw, CAMERA_LIMITS.maxYaw),
         pitch: clamp(state.camera.pitch + dpitch, CAMERA_LIMITS.minPitch, CAMERA_LIMITS.maxPitch),
       },
     })),
@@ -206,40 +229,6 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     })),
 
   resetCamera: () => set({ camera: DEFAULT_CAMERA }),
-
-  focusOn: (id) => {
-    const positioned = get().layout.byId.get(id);
-    if (!positioned) return;
-    const [x, y, z] = positioned.position;
-    set((state) => ({
-      camera: {
-        ...state.camera,
-        targetX: x,
-        targetY: y,
-        targetZ: z,
-        distance: Math.min(state.camera.distance, positioned.node.kind === 'folder' ? 6 : 4),
-      },
-    }));
-  },
-
-  revealNode: (id) => {
-    const state = get();
-    const path = findPath(state.tree, id);
-    if (path.length === 0) return;
-
-    const expandedIds = new Set(state.expandedIds);
-    for (const ancestor of path) {
-      if (ancestor.kind === 'folder' && ancestor.id !== id) expandedIds.add(ancestor.id);
-    }
-    const leaf = path[path.length - 1];
-    set({
-      expandedIds,
-      layout: computeLayout(state.tree, expandedIds),
-      selectedId: id,
-      previewNode: leaf.kind === 'file' ? leaf : state.previewNode,
-    });
-    get().focusOn(id);
-  },
 
   setPointer: (x, y, source) =>
     set({ pointer: { x: clamp(x, 0, 1), y: clamp(y, 0, 1) }, pointerSource: source }),

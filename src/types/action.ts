@@ -20,6 +20,8 @@ export type Action =
   | { type: 'FIT' }
   /** Jump to a bookmarked node (held finger-count gesture; slot = finger count). */
   | { type: 'BOOKMARK'; slot: number }
+  /** Step back to the parent folder (fist hold / Backspace). */
+  | { type: 'BACK' }
   | { type: 'TOGGLE_UI' }
   /** Close preview / clear selection / reset. */
   | { type: 'EXIT' };
